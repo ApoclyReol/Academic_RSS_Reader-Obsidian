@@ -1,4 +1,5 @@
 import {
+  access,
   copyFile,
   mkdir,
   readFile,
@@ -26,7 +27,7 @@ export class RssDatabase {
     private readonly databasePath: string,
   ) {}
 
-  async initialize(): Promise<void> {
+  async initialize(options: { createIfMissing?: boolean } = {}): Promise<void> {
     await mkdir(dirname(this.databasePath), { recursive: true });
     this.sql = await initSqlJs();
 
@@ -36,6 +37,9 @@ export class RssDatabase {
     } catch (error) {
       if (!this.isMissingFile(error)) {
         throw error;
+      }
+      if (options.createIfMissing === false) {
+        throw new Error("所选目录中没有 rss-reader.sqlite3");
       }
       this.database = new this.sql.Database();
     }
@@ -153,17 +157,70 @@ export class RssDatabase {
 }
 
 export function databasePaths(
-  pluginDirectory: string,
+  dataDirectory: string,
 ): {
   databasePath: string;
   backupDirectory: string;
 } {
   return {
-    databasePath: join(pluginDirectory, "rss-reader.sqlite3"),
-    backupDirectory: join(pluginDirectory, "backups"),
+    databasePath: join(dataDirectory, "rss-reader.sqlite3"),
+    backupDirectory: join(dataDirectory, "backups"),
   };
 }
 
-export function recoveryDatabasePath(pluginDirectory: string): string {
-  return join(pluginDirectory, "rss-reader-recovery.sqlite3");
+export interface DatabaseInspection {
+  exists: boolean;
+  valid: boolean;
+  error: string | null;
+}
+
+export async function inspectDatabaseFile(
+  databasePath: string,
+): Promise<DatabaseInspection> {
+  try {
+    await access(databasePath);
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      "code" in error &&
+      (error as Error & { code?: unknown }).code === "ENOENT"
+    ) {
+      return { exists: false, valid: false, error: null };
+    }
+    return {
+      exists: false,
+      valid: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+
+  let database: Database | null = null;
+  try {
+    const sql = await initSqlJs();
+    database = new sql.Database(await readFile(databasePath));
+    const integrity = database.exec("PRAGMA integrity_check");
+    const result = integrity[0]?.values[0]?.[0];
+    if (result !== "ok") {
+      throw new Error(`SQLite 完整性检查失败：${String(result ?? "未知错误")}`);
+    }
+    const requiredTables = ["feeds", "items", "item_feeds"];
+    const tables = new Set(
+      database
+        .exec("SELECT name FROM sqlite_master WHERE type='table'")[0]
+        ?.values.map((row) => String(row[0])) ?? [],
+    );
+    const missing = requiredTables.filter((table) => !tables.has(table));
+    if (missing.length > 0) {
+      throw new Error(`数据库缺少核心表：${missing.join("、")}`);
+    }
+    return { exists: true, valid: true, error: null };
+  } catch (error) {
+    return {
+      exists: true,
+      valid: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  } finally {
+    database?.close();
+  }
 }

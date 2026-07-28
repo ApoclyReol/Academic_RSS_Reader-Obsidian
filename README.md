@@ -1,12 +1,12 @@
 # RSS Reader for Obsidian
 
-RSS Reader v1.0.0 是面向学术文献初筛的 Obsidian 桌面插件。它在本地管理 RSS 订阅、五类文献篮子、标题翻译、个性化推荐和兴趣分析，不需要 Python sidecar。
+RSS Reader v1.0.1 是面向学术文献初筛的 Obsidian 桌面插件。它在本地管理 RSS 订阅、五类文献篮子、标题翻译、个性化推荐和兴趣分析，不需要 Python sidecar。
 
 ## v1.0.0 功能
 
 - 添加、编辑、启停和删除订阅
 - 导入 OPML、XML、TXT、粘贴文本和逐行 RSS URL
-- 启动时更新全部启用订阅，或手动更新全部及单个订阅
+- 每次启动后首次打开阅读器时静默更新全部启用订阅，也可手动更新全部及单个订阅
 - 兼容 RSS 与 Atom，提取标题、作者、期刊、年份、DOI、链接和摘要
 - 沿用旧 Streamlit 的稳定 GUID、标题规范化和分层去重规则
 - 保留跨订阅关联、状态、推荐结果和旧数据库主数据
@@ -14,7 +14,6 @@ RSS Reader v1.0.0 是面向学术文献初筛的 Obsidian 桌面插件。它在�
 - 列表状态处理、打开系统浏览器和会话内撤回
 - TypeScript TF-IDF/逻辑回归推荐、人工关键词和 OpenAI 兼容 LLM 复核
 - 总体及分订阅兴趣分析
-- 旧版 SQLite 只读预览、备份和导入
 
 ## 标题翻译
 
@@ -45,18 +44,22 @@ RSS Reader v1.0.0 是面向学术文献初筛的 Obsidian 桌面插件。它在�
 
 ## 本地数据与备份
 
-运行数据库固定为：
+首次打开 RSS 面板时，先在设置中选择当前 Vault 内的数据目录，再创建新数据库或载入已有数据库：
 
 ```text
-<Vault>/.obsidian/plugins/rss-reader/rss-reader.sqlite3
+<Vault>/<用户选择的数据目录>/
+├── rss-reader.sqlite3
+└── backups/
 ```
 
-设置只保存在同目录的 `data.json`。设置页可选择 Vault 内的相对备份目录，推荐 `Assets/RSS Reader`，并执行：
+`data.json` 仍由 Obsidian 保存在插件目录，只记录设置。订阅、文献和推荐数据不会写入插件目录。设置页支持：
 
-- 导出带时间戳的数据库备份
-- 从所选目录中最近修改的 SQLite 文件恢复
+- 创建或载入数据库
+- 将当前数据库迁移到空目录，或安全载入另一目录中的数据库
+- 在危险操作前自动创建保护备份
+- 手动备份及恢复 `backups/` 中最近的有效备份
 
-插件不会把运行数据库切换到 Vault 外，也不会通过开发者服务器转发数据。数据库异常时插件使用独立恢复库启动，原文件保持不变。
+插件不会访问 Vault 外的路径，也不会通过开发者服务器转发数据。数据库校验失败时保留原文件且不创建恢复库。
 
 ## 开发与发布
 
@@ -75,14 +78,14 @@ npm run package
 ```text
 build/
 ├── obsidian/rss-reader/
-├── RSS-Reader-1.0.0.zip
+├── RSS-Reader-1.0.1.zip
 └── SHA256SUMS.txt
 ```
 
 详细说明：
 
 - [开发说明](docs/DEVELOPMENT.md)
-- [旧版数据迁移](docs/LEGACY_MIGRATION.md)
 - [v1.0.0 发布说明](docs/V1_RELEASE.md)
+- [v1.0.1 发布说明](docs/V1_0_1_RELEASE.md)
 - [安全与隐私](SECURITY.md)
 - [版本记录](CHANGELOG.md)

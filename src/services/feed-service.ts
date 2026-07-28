@@ -196,7 +196,7 @@ export class FeedService {
           headers: {
             Accept:
               "application/rss+xml, application/atom+xml, application/xml, text/xml, */*",
-            "User-Agent": "RSS-Reader-Obsidian/1.0.0",
+            "User-Agent": "RSS-Reader-Obsidian/1.0.1",
           },
           throw: false,
         });

@@ -201,14 +201,6 @@
   width: 100%;
 }
 
-.rss-reader-migration {
-  border: 1px solid var(--background-modifier-border);
-  border-radius: var(--radius-m);
-  display: grid;
-  gap: var(--size-4-3);
-  padding: var(--size-4-3);
-}
-
 @media (max-width: 900px) {
   .rss-reader__header {
     align-items: flex-start;

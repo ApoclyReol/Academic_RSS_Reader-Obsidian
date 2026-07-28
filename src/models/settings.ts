@@ -5,7 +5,7 @@ export type TranslationDisplayMode =
   | "both";
 
 export interface RssReaderSettings {
-  backupDirectory: string;
+  dataDirectory: string;
   autoUpdateOnStartup: boolean;
   hiddenExpireDays: number;
   targetLanguage: string;
@@ -20,7 +20,7 @@ export interface RssReaderSettings {
 }
 
 export const DEFAULT_SETTINGS: RssReaderSettings = {
-  backupDirectory: "Assets/RSS Reader",
+  dataDirectory: "",
   autoUpdateOnStartup: true,
   hiddenExpireDays: 30,
   targetLanguage: "zh-CN",

@@ -1,4 +1,7 @@
-import { readdir, stat } from "node:fs/promises";
+import {
+  readdir,
+  stat,
+} from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 
 import { FileSystemAdapter, Notice, Plugin } from "obsidian";
@@ -7,7 +10,8 @@ import { RSS_READER_VIEW_TYPE } from "./constants";
 import {
   RssDatabase,
   databasePaths,
-  recoveryDatabasePath,
+  inspectDatabaseFile,
+  type DatabaseInspection,
 } from "./database/database";
 import {
   DEFAULT_SETTINGS,
@@ -16,26 +20,60 @@ import {
 import { RssRepository } from "./repositories/rss-repository";
 import { RssReaderSettingTab } from "./settings/rss-reader-setting-tab";
 import { FeedService } from "./services/feed-service";
-import { LegacyImportService } from "./services/legacy-import-service";
 import { LlmService } from "./services/llm-service";
 import { RecommendationService } from "./services/recommendation-service";
 import { GoogleWebTranslationProvider } from "./services/translation-provider";
 import { TranslationService } from "./services/translation-service";
 import { RssReaderView } from "./views/rss-reader-view";
 
+export type DatabaseState =
+  | "unconfigured"
+  | "initializing"
+  | "ready"
+  | "error";
+export type DirectorySwitchMode = "migrate" | "load";
+
+interface ServiceContext {
+  database: RssDatabase;
+  repository: RssRepository;
+  feedService: FeedService;
+  translationService: TranslationService;
+  recommendationService: RecommendationService;
+  llmService: LlmService;
+  unsubscribeTranslation: () => void;
+}
+
 export default class RssReaderPlugin extends Plugin {
   settings: RssReaderSettings = DEFAULT_SETTINGS;
-  database!: RssDatabase;
-  repository!: RssRepository;
-  feedService!: FeedService;
-  translationService!: TranslationService;
-  recommendationService!: RecommendationService;
-  llmService!: LlmService;
-  legacyImportService!: LegacyImportService;
-  databaseStartupError: string | null = null;
-  private pluginDirectory = "";
+  databaseState: DatabaseState = "unconfigured";
+  databaseError: string | null = null;
+  private context: ServiceContext | null = null;
+  private automaticUpdateStarted = false;
   private vaultRoot = "";
-  private primaryDatabasePath = "";
+
+  get database(): RssDatabase {
+    return this.requireContext().database;
+  }
+
+  get repository(): RssRepository {
+    return this.requireContext().repository;
+  }
+
+  get feedService(): FeedService {
+    return this.requireContext().feedService;
+  }
+
+  get translationService(): TranslationService {
+    return this.requireContext().translationService;
+  }
+
+  get recommendationService(): RecommendationService {
+    return this.requireContext().recommendationService;
+  }
+
+  get llmService(): LlmService {
+    return this.requireContext().llmService;
+  }
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -43,73 +81,7 @@ export default class RssReaderPlugin extends Plugin {
     if (!(adapter instanceof FileSystemAdapter)) {
       throw new Error("RSS Reader 仅支持 Obsidian 桌面端文件系统");
     }
-    const pluginDirectory = adapter.getFullPath(
-      `${this.app.vault.configDir}/plugins/${this.manifest.id}`,
-    );
-    this.pluginDirectory = pluginDirectory;
     this.vaultRoot = adapter.getBasePath();
-    const paths = databasePaths(pluginDirectory);
-    this.primaryDatabasePath = paths.databasePath;
-    this.database = new RssDatabase(paths.databasePath);
-    try {
-      await this.database.initialize();
-    } catch (error) {
-      this.databaseStartupError =
-        error instanceof Error ? error.message : String(error);
-      this.database = new RssDatabase(
-        recoveryDatabasePath(pluginDirectory),
-      );
-      await this.database.initialize();
-      new Notice(
-        `数据库无法打开，RSS Reader 已进入恢复模式。原文件未修改：${this.databaseStartupError}`,
-        0,
-      );
-    }
-    this.repository = new RssRepository(this.database);
-    const identityRepair =
-      await this.repository.repairLegacyItemIdentity();
-    if (identityRepair.removedItems > 0) {
-      new Notice(
-        `已修复 ${identityRepair.removedItems} 条重复文献，并保留原有状态与关联。`,
-        8_000,
-      );
-    }
-
-    this.translationService = new TranslationService(
-      this.repository,
-      new GoogleWebTranslationProvider(),
-      () => this.settings,
-    );
-    this.feedService = new FeedService(
-      this.repository,
-      () => this.settings,
-      {
-        onNewItems: (itemIds) =>
-          this.translationService.enqueueNewItems(itemIds),
-        onSettingsChanged: async () => this.refreshViews(),
-      },
-    );
-    this.recommendationService = new RecommendationService(this.repository);
-    this.llmService = new LlmService(this.repository, () => this.settings);
-    this.legacyImportService = new LegacyImportService(
-      this.database,
-      this.databaseStartupError
-        ? databasePaths(pluginDirectory).backupDirectory
-        : paths.backupDirectory,
-    );
-    await this.translationService.initialize();
-    this.register(() => this.translationService.stop());
-    this.register(
-      this.translationService.onChange(() => {
-        for (const leaf of this.app.workspace.getLeavesOfType(
-          RSS_READER_VIEW_TYPE,
-        )) {
-          if (leaf.view instanceof RssReaderView) {
-            leaf.view.refreshTranslatedTitles();
-          }
-        }
-      }),
-    );
 
     this.registerView(
       RSS_READER_VIEW_TYPE,
@@ -126,18 +98,10 @@ export default class RssReaderPlugin extends Plugin {
     this.addCommand({
       id: "update-feeds",
       name: "更新全部启用订阅",
-      callback: () => void this.runStartupUpdate("手动更新"),
+      callback: () => void this.runUpdateWithNotice("手动更新"),
     });
     this.addSettingTab(new RssReaderSettingTab(this.app, this));
-
-    if (this.settings.autoUpdateOnStartup) {
-      window.setTimeout(() => void this.runStartupUpdate("启动自动更新"), 500);
-    }
-  }
-
-  onunload(): void {
-    this.translationService?.stop();
-    this.database?.close();
+    this.register(() => this.disposeContext(this.context));
   }
 
   async loadSettings(): Promise<void> {
@@ -146,11 +110,16 @@ export default class RssReaderPlugin extends Plugin {
       ...DEFAULT_SETTINGS,
       ...(isPartialSettings(stored) ? stored : {}),
     };
-    delete (
-      this.settings as RssReaderSettings & {
-        databaseDirectory?: string;
-      }
-    ).databaseDirectory;
+    const legacySettings = this.settings as RssReaderSettings & {
+      backupDirectory?: string;
+      databaseDirectory?: string;
+    };
+    delete legacySettings.backupDirectory;
+    delete legacySettings.databaseDirectory;
+    this.settings.dataDirectory =
+      typeof this.settings.dataDirectory === "string"
+        ? this.settings.dataDirectory
+        : "";
     this.settings.autoTranslateTitles = false;
     this.settings.abstractTranslationMode = "manual";
     this.settings.pauseAutomaticTranslation = true;
@@ -161,58 +130,188 @@ export default class RssReaderPlugin extends Plugin {
     await this.refreshViews();
   }
 
-  async exportDatabaseBackup(directory: string): Promise<string> {
-    const destinationDirectory = this.resolveVaultDirectory(directory);
-    const destination = join(
-      destinationDirectory,
-      `rss-reader-backup-${fileTimestamp()}.sqlite3`,
-    );
-    await this.database.backup(destination);
-    this.settings.backupDirectory = directory.trim();
-    await this.saveSettings();
-    return destination;
-  }
-
-  async restoreLatestDatabaseBackup(directory: string): Promise<string> {
-    const sourceDirectory = this.resolveVaultDirectory(directory);
-    const entries = await readdir(sourceDirectory, { withFileTypes: true });
-    const candidates = await Promise.all(
-      entries
-        .filter(
-          (entry) =>
-            entry.isFile() && /\.(sqlite3|sqlite|db)$/i.test(entry.name),
-        )
-        .map(async (entry) => {
-          const path = join(sourceDirectory, entry.name);
-          return { path, modifiedAt: (await stat(path)).mtimeMs };
-        }),
-    );
-    const source = candidates.sort(
-      (left, right) => right.modifiedAt - left.modifiedAt,
-    )[0];
-    if (!source) {
-      throw new Error("所选目录中没有 SQLite 备份文件");
-    }
-    await this.database.backup(
-      join(
-        this.pluginDirectory,
-        "backups",
-        `before-restore-${fileTimestamp()}.sqlite3`,
-      ),
-    );
-    await this.database.restoreFromFile(source.path);
-    if (this.database.path !== this.primaryDatabasePath) {
-      await this.database.backup(this.primaryDatabasePath);
-    }
-    this.settings.backupDirectory = directory.trim();
-    await this.saveSettings();
-    this.databaseStartupError = null;
-    await this.refreshViews();
-    return source.path;
+  isDatabaseReady(): boolean {
+    return this.databaseState === "ready" && this.context !== null;
   }
 
   getVaultRoot(): string {
     return this.vaultRoot;
+  }
+
+  getCurrentDatabasePath(): string | null {
+    return this.context?.database.path ?? null;
+  }
+
+  getCurrentBackupDirectory(): string | null {
+    if (!this.isDatabaseReady()) {
+      return null;
+    }
+    return databasePaths(
+      this.resolveVaultDirectory(this.settings.dataDirectory),
+    ).backupDirectory;
+  }
+
+  async inspectDataDirectory(
+    directory: string,
+  ): Promise<DatabaseInspection> {
+    const paths = databasePaths(this.resolveVaultDirectory(directory));
+    return inspectDatabaseFile(paths.databasePath);
+  }
+
+  async prepareDatabaseOnViewOpen(): Promise<void> {
+    if (
+      !this.isDatabaseReady() &&
+      this.databaseState !== "initializing" &&
+      this.settings.dataDirectory
+    ) {
+      await this.loadDatabase(this.settings.dataDirectory).catch(
+        () => undefined,
+      );
+    }
+    await this.runAutomaticUpdateOnViewOpen();
+  }
+
+  async createDatabase(directory: string): Promise<void> {
+    if (this.isDatabaseReady()) {
+      throw new Error("数据库已在运行；请使用“切换数据目录”");
+    }
+    const normalized = normalizeDirectory(directory);
+    const paths = databasePaths(this.resolveVaultDirectory(normalized));
+    const inspection = await inspectDatabaseFile(paths.databasePath);
+    if (inspection.exists) {
+      throw new Error("所选目录已存在 rss-reader.sqlite3，请使用载入");
+    }
+    await this.activateInitialDatabase(normalized, true);
+  }
+
+  async loadDatabase(directory: string): Promise<void> {
+    const normalized = normalizeDirectory(directory);
+    if (this.isDatabaseReady()) {
+      if (normalized === this.settings.dataDirectory) {
+        return;
+      }
+      throw new Error("数据库已在运行；请使用“切换数据目录”");
+    }
+    const inspection = await this.inspectDataDirectory(normalized);
+    if (!inspection.exists || !inspection.valid) {
+      throw new Error(
+        inspection.error ?? "所选目录中没有 rss-reader.sqlite3",
+      );
+    }
+    await this.activateInitialDatabase(normalized, false);
+  }
+
+  async switchDataDirectory(
+    directory: string,
+    mode: DirectorySwitchMode,
+  ): Promise<void> {
+    const current = this.requireContext();
+    if (current.feedService.isUpdating()) {
+      throw new Error("订阅更新正在进行，请完成后再切换数据目录");
+    }
+    const normalized = normalizeDirectory(directory);
+    if (normalized === this.settings.dataDirectory) {
+      throw new Error("所选目录就是当前数据目录");
+    }
+    const targetPaths = databasePaths(
+      this.resolveVaultDirectory(normalized),
+    );
+    const targetInspection = await inspectDatabaseFile(
+      targetPaths.databasePath,
+    );
+
+    if (mode === "migrate") {
+      if (targetInspection.exists) {
+        throw new Error("目标目录已存在 rss-reader.sqlite3，迁移不会覆盖它");
+      }
+    } else if (!targetInspection.exists || !targetInspection.valid) {
+      throw new Error(
+        targetInspection.error ?? "目标目录中没有可载入的 rss-reader.sqlite3",
+      );
+    }
+
+    await this.createProtectionBackup("before-switch");
+    if (mode === "migrate") {
+      await current.database.backup(targetPaths.databasePath);
+      const copied = await inspectDatabaseFile(targetPaths.databasePath);
+      if (!copied.valid) {
+        throw new Error(copied.error ?? "迁移后的数据库校验失败");
+      }
+    }
+
+    const next = await this.buildContext(targetPaths.databasePath, false);
+    try {
+      await this.saveData({ ...this.settings, dataDirectory: normalized });
+    } catch (error) {
+      this.disposeContext(next);
+      throw error;
+    }
+    const previous = this.context;
+    this.context = next;
+    this.settings.dataDirectory = normalized;
+    this.databaseState = "ready";
+    this.databaseError = null;
+    this.automaticUpdateStarted = false;
+    this.disposeContext(previous);
+    await this.refreshViews();
+  }
+
+  async createManualBackup(): Promise<string> {
+    return this.createProtectionBackup("manual");
+  }
+
+  async restoreLatestDatabaseBackup(): Promise<string> {
+    const context = this.requireContext();
+    const backupDirectory = this.getCurrentBackupDirectory();
+    if (!backupDirectory) {
+      throw new Error("请先配置并载入数据库");
+    }
+    const entries = await readdir(backupDirectory, {
+      withFileTypes: true,
+    }).catch(() => []);
+    const candidates = await Promise.all(
+      entries
+        .filter(
+          (entry) =>
+            entry.isFile() &&
+            /^(before-|manual-).*\.(sqlite3|sqlite|db)$/i.test(entry.name),
+        )
+        .map(async (entry) => {
+          const path = join(backupDirectory, entry.name);
+          return { path, modifiedAt: (await stat(path)).mtimeMs };
+        }),
+    );
+    const ordered = candidates.sort(
+      (left, right) => right.modifiedAt - left.modifiedAt,
+    );
+    let source: string | null = null;
+    for (const candidate of ordered) {
+      if ((await inspectDatabaseFile(candidate.path)).valid) {
+        source = candidate.path;
+        break;
+      }
+    }
+    if (!source) {
+      throw new Error("当前数据目录的 backups 中没有有效数据库备份");
+    }
+    await this.createProtectionBackup("before-restore");
+    await context.database.restoreFromFile(source);
+    this.databaseError = null;
+    await this.refreshViews();
+    return source;
+  }
+
+  openSettings(): void {
+    const setting = (
+      this.app as typeof this.app & {
+        setting: {
+          open(): void;
+          openTabById(id: string): void;
+        };
+      }
+    ).setting;
+    setting.open();
+    setting.openTabById(this.manifest.id);
   }
 
   async refreshViews(): Promise<void> {
@@ -225,7 +324,147 @@ export default class RssReaderPlugin extends Plugin {
     }
   }
 
-  private async runStartupUpdate(trigger: string): Promise<void> {
+  async runAutomaticUpdateOnViewOpen(): Promise<void> {
+    if (
+      !this.isDatabaseReady() ||
+      !this.settings.autoUpdateOnStartup ||
+      this.automaticUpdateStarted
+    ) {
+      return;
+    }
+    this.automaticUpdateStarted = true;
+    if (this.feedService.isUpdating()) {
+      return;
+    }
+    try {
+      await this.feedService.updateFeeds();
+    } catch (error) {
+      console.error("RSS Reader automatic update failed", error);
+    }
+  }
+
+  private async activateInitialDatabase(
+    directory: string,
+    createIfMissing: boolean,
+  ): Promise<void> {
+    this.databaseState = "initializing";
+    this.databaseError = null;
+    await this.refreshViews();
+    const path = databasePaths(
+      this.resolveVaultDirectory(directory),
+    ).databasePath;
+    let next: ServiceContext | null = null;
+    try {
+      next = await this.buildContext(path, createIfMissing);
+      await this.saveData({ ...this.settings, dataDirectory: directory });
+      this.context = next;
+      this.settings.dataDirectory = directory;
+      this.databaseState = "ready";
+      this.automaticUpdateStarted = false;
+      await this.refreshViews();
+    } catch (error) {
+      this.disposeContext(next);
+      this.databaseState = "error";
+      this.databaseError =
+        error instanceof Error ? error.message : String(error);
+      await this.refreshViews();
+      throw error;
+    }
+  }
+
+  private async buildContext(
+    databasePath: string,
+    createIfMissing: boolean,
+  ): Promise<ServiceContext> {
+    const database = new RssDatabase(databasePath);
+    try {
+      await database.initialize({ createIfMissing });
+      const repository = new RssRepository(database);
+      const identityRepair = await repository.repairLegacyItemIdentity();
+      if (identityRepair.removedItems > 0) {
+        new Notice(
+          `已修复 ${identityRepair.removedItems} 条重复文献，并保留原有状态与关联。`,
+          8_000,
+        );
+      }
+      const translationService = new TranslationService(
+        repository,
+        new GoogleWebTranslationProvider(),
+        () => this.settings,
+      );
+      const feedService = new FeedService(
+        repository,
+        () => this.settings,
+        {
+          onNewItems: (itemIds) =>
+            translationService.enqueueNewItems(itemIds),
+          onSettingsChanged: async () => this.refreshViews(),
+        },
+      );
+      const context: ServiceContext = {
+        database,
+        repository,
+        feedService,
+        translationService,
+        recommendationService: new RecommendationService(repository),
+        llmService: new LlmService(repository, () => this.settings),
+        unsubscribeTranslation: () => undefined,
+      };
+      context.unsubscribeTranslation = translationService.onChange(() => {
+        for (const leaf of this.app.workspace.getLeavesOfType(
+          RSS_READER_VIEW_TYPE,
+        )) {
+          if (leaf.view instanceof RssReaderView) {
+            leaf.view.refreshTranslatedTitles();
+          }
+        }
+      });
+      await translationService.initialize();
+      return context;
+    } catch (error) {
+      database.close();
+      throw error;
+    }
+  }
+
+  private async createProtectionBackup(prefix: string): Promise<string> {
+    const context = this.requireContext();
+    const backupDirectory = this.getCurrentBackupDirectory();
+    if (!backupDirectory) {
+      throw new Error("请先配置并载入数据库");
+    }
+    const destination = join(
+      backupDirectory,
+      `${prefix}-${fileTimestamp()}.sqlite3`,
+    );
+    await context.database.backup(destination);
+    return destination;
+  }
+
+  private disposeContext(context: ServiceContext | null): void {
+    if (!context) {
+      return;
+    }
+    context.unsubscribeTranslation();
+    context.translationService.stop();
+    context.database.close();
+    if (this.context === context) {
+      this.context = null;
+    }
+  }
+
+  private requireContext(): ServiceContext {
+    if (!this.context || this.databaseState !== "ready") {
+      throw new Error("请先在 RSS Reader 设置中选择并载入数据目录");
+    }
+    return this.context;
+  }
+
+  private async runUpdateWithNotice(trigger: string): Promise<void> {
+    if (!this.isDatabaseReady()) {
+      new Notice("请先在 RSS Reader 设置中选择并载入数据目录");
+      return;
+    }
     if (this.feedService.isUpdating()) {
       return;
     }
@@ -263,17 +502,14 @@ export default class RssReaderPlugin extends Plugin {
   }
 
   private resolveVaultDirectory(directory: string): string {
-    const value = directory.trim().replace(/^\/+|\/+$/g, "");
+    const value = normalizeDirectory(directory);
     if (!value || isAbsolute(directory.trim())) {
       throw new Error("请选择当前 Vault 内的相对目录");
     }
     const destination = resolve(this.vaultRoot, value);
     const pathFromVault = relative(this.vaultRoot, destination);
-    if (
-      pathFromVault.startsWith("..") ||
-      isAbsolute(pathFromVault)
-    ) {
-      throw new Error("备份目录必须位于当前 Vault 内");
+    if (pathFromVault.startsWith("..") || isAbsolute(pathFromVault)) {
+      throw new Error("数据目录必须位于当前 Vault 内");
     }
     return destination;
   }
@@ -283,6 +519,10 @@ function isPartialSettings(
   value: unknown,
 ): value is Partial<RssReaderSettings> {
   return typeof value === "object" && value !== null;
+}
+
+function normalizeDirectory(directory: string): string {
+  return directory.trim().replace(/^\/+|\/+$/g, "");
 }
 
 function fileTimestamp(): string {

@@ -64,6 +64,7 @@ export class RssReaderView extends ItemView {
   }
 
   async onOpen(): Promise<void> {
+    await this.plugin.prepareDatabaseOnViewOpen();
     await this.refresh();
   }
 
@@ -86,6 +87,10 @@ export class RssReaderView extends ItemView {
       }
       container.empty();
       container.addClass("rss-reader");
+      if (!this.plugin.isDatabaseReady()) {
+        this.renderDatabaseSetup(container);
+        return;
+      }
       this.renderHeader(container);
       if (this.page === "reader") {
         this.renderReader(container);
@@ -104,6 +109,9 @@ export class RssReaderView extends ItemView {
   }
 
   refreshTranslatedTitles(): void {
+    if (!this.plugin.isDatabaseReady()) {
+      return;
+    }
     const cards = Array.from(
       this.containerEl.querySelectorAll(
         ".rss-reader__item[data-item-id]",
@@ -149,11 +157,26 @@ export class RssReaderView extends ItemView {
         void this.refresh();
       });
     }
-    if (this.plugin.databaseStartupError) {
-      container.createEl("p", {
-        cls: "rss-reader__warning rss-reader__database-warning",
-        text: "配置数据库无法打开，当前处于恢复模式。请在设置中检查数据库目录；原数据库未被修改。",
+  }
+
+  private renderDatabaseSetup(container: HTMLElement): void {
+    const setup = container.createDiv({
+      cls: "rss-reader__empty-state",
+    });
+    setup.createEl("h2", { text: "需要配置数据目录" });
+    const message =
+      this.plugin.databaseState === "initializing"
+        ? "正在载入 RSS Reader 数据库……"
+        : this.plugin.databaseError
+          ? `数据库未载入：${this.plugin.databaseError}`
+          : "RSS Reader 不会在插件目录创建数据库。请先到设置中选择当前 Vault 内的数据目录，然后创建或载入数据库。";
+    setup.createEl("p", { text: message });
+    if (this.plugin.databaseState !== "initializing") {
+      const button = setup.createEl("button", {
+        cls: "mod-cta",
+        text: "打开 RSS Reader 设置",
       });
+      button.addEventListener("click", () => this.plugin.openSettings());
     }
   }
 

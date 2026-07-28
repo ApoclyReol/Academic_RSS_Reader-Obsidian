@@ -1,7 +1,7 @@
 {
   "id": "rss-reader",
   "name": "RSS Reader",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "minAppVersion": "1.8.0",
   "description": "在 Obsidian 中订阅、阅读和整理学术 RSS 文献。",
   "author": "ApoclyReol",

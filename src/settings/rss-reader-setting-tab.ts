@@ -18,85 +18,122 @@ export class RssReaderSettingTab extends PluginSettingTab {
     new Setting(containerEl).setName("数据库存储").setHeading();
     containerEl.createEl("p", {
       cls: "setting-item-description",
-      text: "运行数据库固定保存在当前 Vault 的插件目录中。请选择 Vault 内的备份目录，建议使用 Assets/RSS Reader；插件不会访问 Vault 外的路径。",
+      text: "请选择当前 Vault 内的数据目录。运行数据库保存为 rss-reader.sqlite3，所有保护性备份保存在 backups 子目录。",
     });
-    let backupDirectory = this.plugin.settings.backupDirectory;
+    let dataDirectory = this.plugin.settings.dataDirectory;
+    const inspection = containerEl.createEl("p", {
+      cls: "setting-item-description",
+      text: this.databaseStatusText(),
+    });
     const databaseSetting = new Setting(containerEl)
-      .setName("数据库备份目录")
-      .setDesc(
-        "填写相对于 Vault 根目录的路径。导出会创建带时间戳的备份；恢复会使用该目录中最近修改的 SQLite 文件。",
-      )
+      .setName("RSS Reader 数据目录")
+      .setDesc("输入相对于 Vault 根目录的路径；输入本身不会创建或载入数据库。")
       .addText((text) => {
         text
-          .setPlaceholder("Assets/RSS Reader")
-          .setValue(backupDirectory)
-          .onChange((value) => {
-            backupDirectory = value;
+          .setPlaceholder("Assets/RSS Reader Data")
+          .setValue(dataDirectory)
+          .onChange(async (value) => {
+            dataDirectory = value;
+            inspection.setText(
+              await this.inspectDirectoryText(dataDirectory),
+            );
           });
         this.directorySuggest = new DirectorySuggest(
           this.app,
           text.inputEl,
           this.plugin.getVaultRoot(),
           (value) => {
-            backupDirectory = value;
+            dataDirectory = value;
+            void this.inspectDirectoryText(value).then((message) =>
+              inspection.setText(message),
+            );
           },
         );
-      })
-      .addButton((button) =>
-        button
-          .setButtonText("导出备份")
-          .setCta()
-          .onClick(async () => {
+      });
+    if (this.plugin.isDatabaseReady()) {
+      databaseSetting
+        .addButton((button) =>
+          button.setButtonText("迁移当前库").onClick(async () => {
+            await this.runDatabaseAction(() =>
+              this.plugin.switchDataDirectory(dataDirectory, "migrate"),
+            );
+          }),
+        )
+        .addButton((button) =>
+          button.setButtonText("载入目标库").onClick(async () => {
+            await this.runDatabaseAction(() =>
+              this.plugin.switchDataDirectory(dataDirectory, "load"),
+            );
+          }),
+        );
+    } else {
+      databaseSetting
+        .addButton((button) =>
+          button.setButtonText("创建新数据库").onClick(async () => {
+            await this.runDatabaseAction(() =>
+              this.plugin.createDatabase(dataDirectory),
+            );
+          }),
+        )
+        .addButton((button) =>
+          button
+            .setButtonText("载入数据库")
+            .setCta()
+            .onClick(async () => {
+              await this.runDatabaseAction(() =>
+                this.plugin.loadDatabase(dataDirectory),
+              );
+            }),
+        );
+    }
+    databaseSetting.descEl.createEl("br");
+    databaseSetting.descEl.createSpan({
+      text: "已有有效数据库时使用载入；没有数据库时使用创建。切换和迁移不会覆盖目标文件。",
+    });
+    if (this.plugin.isDatabaseReady()) {
+      new Setting(containerEl)
+        .setName("当前正在使用")
+        .setDesc(this.plugin.getCurrentDatabasePath() ?? "");
+      new Setting(containerEl)
+        .setName("数据库保护")
+        .setDesc("备份文件保存在当前数据目录的 backups 子目录。")
+        .addButton((button) =>
+          button.setButtonText("立即备份").onClick(async () => {
             try {
               const destination =
-                await this.plugin.exportDatabaseBackup(backupDirectory);
+                await this.plugin.createManualBackup();
+              new Notice(`数据库已备份到 ${destination}`, 10_000);
+            } catch (error) {
+              this.showError(error);
+            }
+          }),
+        )
+        .addButton((button) =>
+          button.setButtonText("恢复最近备份").onClick(async () => {
+            try {
+              const source =
+                await this.plugin.restoreLatestDatabaseBackup();
               new Notice(
-                `数据库备份已导出到 ${destination}`,
+                `已从 ${source} 恢复数据库；恢复前已自动备份。`,
                 10_000,
               );
             } catch (error) {
-              new Notice(
-                error instanceof Error ? error.message : String(error),
-                10_000,
-              );
+              this.showError(error);
             }
           }),
-      )
-      .addButton((button) =>
-        button.setButtonText("从目录恢复").onClick(async () => {
-          try {
-            const source =
-              await this.plugin.restoreLatestDatabaseBackup(backupDirectory);
-            new Notice(
-              `已从 ${source} 恢复数据库；恢复前的数据库已自动备份。`,
-              10_000,
-            );
-          } catch (error) {
-            new Notice(
-              error instanceof Error ? error.message : String(error),
-              10_000,
-            );
-          }
-          }),
-      );
-    databaseSetting.descEl.createEl("br");
-    databaseSetting.descEl.createSpan({
-      text: "输入目录名称时只联想当前 Vault 内已有文件夹；也可以输入尚未创建的 Assets 子目录。",
-    });
-    new Setting(containerEl)
-      .setName("当前正在使用")
-      .setDesc(this.plugin.database.path);
-    if (this.plugin.databaseStartupError) {
+        );
+    }
+    if (this.plugin.databaseError) {
       containerEl.createEl("p", {
         cls: "rss-reader__warning",
-        text: `配置数据库无法打开，插件当前使用恢复数据库。原文件未修改。错误：${this.plugin.databaseStartupError}`,
+        text: `数据库未载入，原文件未修改。错误：${this.plugin.databaseError}`,
       });
     }
 
     new Setting(containerEl).setName("订阅更新").setHeading();
     new Setting(containerEl)
-      .setName("启动时自动更新")
-      .setDesc("每次启动 Obsidian 后更新一次全部启用订阅。")
+      .setName("打开阅读器时自动更新")
+      .setDesc("每次启动 Obsidian 后，首次打开 RSS Reader 时在后台静默更新全部启用订阅。")
       .addToggle((toggle) =>
         toggle
           .setValue(this.plugin.settings.autoUpdateOnStartup)
@@ -186,6 +223,10 @@ export class RssReaderSettingTab extends PluginSettingTab {
       .setName("测试连接")
       .addButton((button) =>
         button.setButtonText("测试").onClick(async () => {
+          if (!this.plugin.isDatabaseReady()) {
+            new Notice("请先配置并载入数据库");
+            return;
+          }
           try {
             new Notice(await this.plugin.llmService.testConnection());
           } catch (error) {
@@ -196,76 +237,59 @@ export class RssReaderSettingTab extends PluginSettingTab {
         }),
       );
 
-    new Setting(containerEl).setName("旧数据迁移").setHeading();
-    containerEl.createEl("p", {
-      cls: "setting-item-description",
-      text: "选择旧版 rss_reader.sqlite3。插件会先只读预览，导入前备份源文件和当前插件数据库；不会修改旧文件，也不会导入 API Key 或为历史条目创建翻译任务。",
-    });
-    this.renderLegacyImport(containerEl);
   }
 
-  private renderLegacyImport(container: HTMLElement): void {
-    const box = container.createDiv({ cls: "rss-reader-migration" });
-    const fileInput = box.createEl("input", {
-      type: "file",
-      attr: { accept: ".sqlite3,.db,.sqlite" },
-    });
-    const preview = box.createDiv({ cls: "rss-reader-migration__preview" });
-    const importButton = box.createEl("button", {
-      text: "确认导入",
-      cls: "mod-cta",
-    });
-    importButton.disabled = true;
-    let selectedBytes: Uint8Array | null = null;
-    let selectedName = "";
-
-    fileInput.addEventListener("change", () => {
-      const file = fileInput.files?.[0];
-      if (!file) {
-        return;
-      }
-      void (async () => {
-        selectedBytes = new Uint8Array(await file.arrayBuffer());
-        selectedName = file.name;
-        const result =
-          await this.plugin.legacyImportService.preview(selectedBytes);
-        preview.empty();
-        if (!result.valid) {
-          preview.setText(`缺少表：${result.missingTables.join("、")}`);
-          importButton.disabled = true;
-          return;
-        }
-        preview.createEl("p", {
-          text: `订阅 ${result.counts.feeds}，条目 ${result.counts.items}，关联 ${result.counts.item_feeds}，推荐分数 ${result.counts.recommendation_scores}，关键词 ${result.counts.recommendation_keywords}，模型 ${result.counts.recommendation_models}`,
-        });
-        importButton.disabled = false;
-      })();
-    });
-
-    importButton.addEventListener("click", () => {
-      if (!selectedBytes) {
-        return;
-      }
-      importButton.disabled = true;
-      void (async () => {
-        try {
-          const report = await this.plugin.legacyImportService.import(
-            selectedBytes,
-            selectedName,
-          );
-          preview.empty();
-          preview.createEl("p", {
-            text: `导入完成：订阅 ${report.imported.feeds}，条目 ${report.imported.items}，跳过已有条目 ${report.skipped.items}，冲突 ${report.conflicts.length}。`,
-          });
-          new Notice("旧数据导入完成");
-          await this.plugin.refreshViews();
-        } catch (error) {
-          preview.setText(
-            error instanceof Error ? error.message : String(error),
-          );
-          importButton.disabled = false;
-        }
-      })();
-    });
+  private databaseStatusText(): string {
+    if (this.plugin.databaseState === "ready") {
+      return "数据库已就绪。输入其他目录后可迁移当前库或载入目标库。";
+    }
+    if (this.plugin.databaseState === "initializing") {
+      return "正在初始化数据库……";
+    }
+    if (this.plugin.databaseState === "error") {
+      return `数据库载入失败：${this.plugin.databaseError ?? "未知错误"}`;
+    }
+    return this.plugin.settings.dataDirectory
+      ? "已保存数据目录；打开 RSS Reader 时会尝试载入其中的数据库。"
+      : "尚未配置数据目录。";
   }
+
+  private async inspectDirectoryText(directory: string): Promise<string> {
+    if (!directory.trim()) {
+      return "请输入当前 Vault 内的数据目录。";
+    }
+    try {
+      const result = await this.plugin.inspectDataDirectory(directory);
+      if (!result.exists) {
+        return "目录中没有数据库，可以创建新数据库。";
+      }
+      if (result.valid) {
+        return "发现有效的 rss-reader.sqlite3，可以载入。";
+      }
+      return `发现数据库文件，但校验失败：${result.error ?? "未知错误"}`;
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  private async runDatabaseAction(
+    action: () => Promise<void>,
+  ): Promise<void> {
+    try {
+      await action();
+      new Notice("数据库操作完成");
+      this.display();
+    } catch (error) {
+      this.showError(error);
+      this.display();
+    }
+  }
+
+  private showError(error: unknown): void {
+    new Notice(
+      error instanceof Error ? error.message : String(error),
+      10_000,
+    );
+  }
+
 }
