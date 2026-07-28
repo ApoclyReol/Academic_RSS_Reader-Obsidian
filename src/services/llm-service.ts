@@ -1,0 +1,104 @@
+import { requestUrl } from "obsidian";
+
+import type { RssReaderSettings } from "../models/settings";
+import { RssRepository } from "../repositories/rss-repository";
+import { parseTier } from "./relevance";
+
+export interface LlmReviewRun {
+  high: number;
+  low: number;
+  failed: number;
+}
+
+export class LlmService {
+  constructor(
+    private readonly repository: RssRepository,
+    private readonly getSettings: () => RssReaderSettings,
+  ) {}
+
+  async testConnection(): Promise<string> {
+    const settings = this.validatedSettings();
+    const response = await this.complete(
+      settings,
+      "只回复 high，不要添加其他文字。",
+    );
+    if (parseTier(response) !== "high") {
+      throw new Error("服务已响应，但没有按要求返回 high");
+    }
+    return "连接、认证和模型响应正常";
+  }
+
+  async reviewPending(): Promise<LlmReviewRun> {
+    const settings = this.validatedSettings();
+    const result: LlmReviewRun = { high: 0, low: 0, failed: 0 };
+    for (const item of this.repository.listPendingLlmItems()) {
+      try {
+        const response = await this.complete(
+          settings,
+          [
+            "你正在帮助研究者筛选论文。",
+            `研究兴趣：${settings.userInterest || "未补充"}`,
+            `标题：${item.title}`,
+            `摘要：${item.summary}`,
+            `关键词分：${item.keywordScore ?? 50}`,
+            "判断论文是否值得优先阅读。只能返回 high 或 low。",
+          ].join("\n"),
+        );
+        const tier = parseTier(response);
+        await this.repository.saveLlmReview(item.id, tier, null);
+        result[tier] += 1;
+      } catch (error) {
+        result.failed += 1;
+        await this.repository.saveLlmReview(
+          item.id,
+          null,
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    }
+    return result;
+  }
+
+  private validatedSettings(): RssReaderSettings {
+    const settings = this.getSettings();
+    if (!settings.llmBaseUrl || !settings.llmApiKey || !settings.llmModel) {
+      throw new Error("请先配置 LLM 地址、API Key 和模型");
+    }
+    return settings;
+  }
+
+  private async complete(
+    settings: RssReaderSettings,
+    prompt: string,
+  ): Promise<string> {
+    const base = settings.llmBaseUrl.replace(/\/+$/, "");
+    const url = base.endsWith("/v1")
+      ? `${base}/chat/completions`
+      : `${base}/v1/chat/completions`;
+    const response = await requestUrl({
+      url,
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${settings.llmApiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: settings.llmModel,
+        temperature: 0,
+        messages: [{ role: "user", content: prompt }],
+      }),
+      throw: false,
+    });
+    if (response.status < 200 || response.status >= 300) {
+      throw new Error(`LLM 请求失败：HTTP ${response.status}`);
+    }
+    const payload = response.json as {
+      choices?: Array<{ message?: { content?: string } }>;
+    };
+    const content = payload.choices?.[0]?.message?.content?.trim();
+    if (!content) {
+      throw new Error("LLM 返回内容为空");
+    }
+    return content;
+  }
+}

@@ -1,25 +1,30 @@
 {
   "name": "rss-reader-obsidian",
-  "version": "0.1.0",
-  "description": "An Obsidian-native RSS reader and personalized reading workflow.",
+  "version": "1.0.0",
+  "description": "面向学术文献初筛的 Obsidian 桌面 RSS 阅读与个性化推荐插件。",
   "main": "main.js",
   "type": "module",
   "scripts": {
     "dev": "node esbuild.config.mjs",
     "build": "tsc --noEmit --skipLibCheck && node esbuild.config.mjs production",
+    "package": "npm run build && node scripts/package-release.mjs",
     "lint": "eslint .",
+    "test": "vitest run",
     "version": "node version-bump.mjs && git add manifest.json versions.json"
   },
   "keywords": [
     "obsidian",
     "rss",
-    "reader"
+    "reader",
+    "research",
+    "recommendation"
   ],
   "author": "ApoclyReol",
   "license": "MIT",
   "devDependencies": {
     "@eslint/js": "^9.39.4",
     "@types/node": "^22.15.17",
+    "@types/sql.js": "^1.4.11",
     "esbuild": "0.25.5",
     "eslint": "^9.39.4",
     "eslint-plugin-obsidianmd": "^0.4.0",
@@ -27,6 +32,11 @@
     "jiti": "^2.6.1",
     "obsidian": "latest",
     "typescript": "^5.8.3",
-    "typescript-eslint": "^8.59.1"
+    "typescript-eslint": "^8.59.1",
+    "vitest": "^4.1.10"
+  },
+  "dependencies": {
+    "fast-xml-parser": "^5.10.1",
+    "sql.js": "^1.14.1"
   }
 }

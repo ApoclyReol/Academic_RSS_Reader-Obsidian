@@ -1,40 +1,112 @@
 # 开发说明
 
-## 常用命令
+## 环境与命令
+
+需要 Node.js 18 或更高版本。
 
 ```bash
 npm install
 npm run dev
-npm run build
 npm run lint
-```
-
-`npm run dev` 会监听 `src/` 并生成开发版 `main.js`；`npm run build` 会先做 TypeScript 类型检查，再生成压缩后的生产版本。
-
-## 在测试 Vault 中加载
-
-建议只使用独立测试 Vault：
-
-1. 关闭或禁用同名插件。
-2. 将项目目录链接到 `<Vault>/.obsidian/plugins/rss-reader/`，或复制 `main.js`、`manifest.json`、`styles.css`。
-3. 打开“设置 → 第三方插件”，启用 RSS Reader。
-4. 修改代码后运行命令“重新加载应用而不保存”，再检查控制台错误。
-
-## 代码边界
-
-- `main.ts` 只负责插件生命周期、命令注册和依赖装配。
-- `views/` 负责界面，不直接实现抓取或推荐算法。
-- `services/` 承载用例和业务逻辑，不依赖具体视图。
-- `repositories/` 封装持久化，避免业务层绑定 Obsidian 存储细节。
-- `models/` 存放跨层共享的领域类型。
-
-后续功能应按垂直切片迁移，并为 service 与 repository 层补充自动化测试。
-
-## 版本发布
-
-```bash
-npm version patch
+npm test
 npm run build
+npm run package
 ```
 
-版本命令会同步 `package.json`、`manifest.json` 和 `versions.json`。GitHub Release 的标签必须与 `manifest.json` 中版本一致，且不带 `v` 前缀。
+- `npm run dev` 持续构建带内联 source map 的 `main.js`。
+- `npm run build` 执行 TypeScript 检查并生成压缩后的 `main.js`。
+- `npm run package` 先清空旧 `build/`，再生成完整插件目录、版本化 ZIP 和 SHA-256 校验文件。
+- SQLite ASM 运行时内嵌在 `main.js`，发布包不需要 WASM 文件。
+
+## 模块边界
+
+```text
+src/
+├── database/       # sql.js、schema、串行事务和原子持久化
+├── models/         # 领域类型和设置
+├── repositories/  # SQL 查询、写入和兼容维护
+├── services/       # RSS、翻译、推荐、LLM 和旧库导入
+├── settings/       # Obsidian 设置页与 Vault 目录联想
+├── types/          # 第三方模块声明
+└── views/          # 阅读、订阅管理和兴趣分析
+```
+
+约束：
+
+- RSS 解析器只生成领域对象，不调用翻译 Provider。
+- Feed Service 先完成 RSS 入库，再通知翻译服务。
+- UI 不直接执行 SQL。
+- 所有数据库写入经同一写链和事务，提交后以临时文件原子替换。
+- 推荐模型只在用户主动操作时重建。
+- 标题翻译只由阅读页开关触发；译文变化局部更新卡片，不重绘整个列表。
+- 运行数据库固定在插件目录；设置中的目录仅用于 Vault 内备份和恢复。
+
+## 去重兼容规则
+
+v1.0.0 必须保持旧 Streamlit 身份规则：
+
+```text
+有 DOI：
+doi:{lowercase-doi}
+
+无 DOI、有作者：
+cnki-local:{sha256(规范化标题|年份|规范化作者前48字符)前24位}
+
+无 DOI、无作者：
+cnki-local:{sha256(规范化标题|年份|规范化用户期刊名)前24位}
+```
+
+不得把 CNKI 临时 URL 参数用于 GUID。用户填写的订阅名称是期刊名真源。任何 GUID、标题规范化或作者提取调整都必须增加兼容测试，并用旧数据库差集验证。
+
+## 数据库
+
+旧版六张业务表保持兼容：
+
+- `feeds`
+- `items`
+- `item_feeds`
+- `recommendation_scores`
+- `recommendation_keywords`
+- `recommendation_models`
+
+v1.0.0 增加：
+
+- `translations`
+- `app_metadata`
+- `schema_migrations`
+
+修改 schema 时必须增加明确迁移、保持重复执行幂等，并测试事务失败、数量校验和恢复。
+
+## 测试 Vault
+
+只在独立 Vault 中验收开发版本：
+
+1. 冷启动、禁用/启用和应用重载。
+2. RSS/Atom、CNKI、DOI、动态链接和旧 GUID 去重。
+3. 五篮子状态流转和撤回。
+4. 标题翻译开关、视口预取、缓存和失败回退。
+5. 订阅开关、单个更新和批量导入。
+6. 数据库备份、恢复、损坏回退和外键检查。
+7. 推荐、LLM 严格响应和兴趣分析。
+8. 旧数据库导入后的核心表数量与状态。
+
+## 发布
+
+版本必须同时更新：
+
+- `package.json`
+- `package-lock.json`
+- `manifest.json`
+- `versions.json`
+- RSS 请求 User-Agent
+
+发布 ZIP 中只能有：
+
+```text
+rss-reader/
+├── main.js
+├── manifest.json
+└── styles.css
+```
+
+GitHub Release 标签与 `manifest.json` 完全相同且不带 `v`。

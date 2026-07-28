@@ -2,7 +2,12 @@ node_modules/
 main.js
 *.map
 data.json
+rss-reader.sqlite3
+rss-reader-recovery.sqlite3
+rss-reader.sqlite3.tmp
+backups/
 .DS_Store
 .idea/
 .vscode/
 coverage/
+build/
