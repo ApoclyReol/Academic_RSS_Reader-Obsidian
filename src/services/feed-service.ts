@@ -6,10 +6,10 @@ import type {
 } from "../models/domain";
 import type { RssReaderSettings } from "../models/settings";
 import { RssRepository } from "../repositories/rss-repository";
+import type { DatabaseOperationCoordinator } from "./database-operation-coordinator";
 import { parseFeed } from "./rss-parser";
 
 export interface FeedUpdateHooks {
-  onNewItems(itemIds: number[]): void;
   onSettingsChanged(): Promise<void>;
 }
 
@@ -20,6 +20,8 @@ export class FeedService {
     private readonly repository: RssRepository,
     private readonly getSettings: () => RssReaderSettings,
     private readonly hooks: FeedUpdateHooks,
+    private readonly timerWindow: Pick<Window, "setTimeout">,
+    private readonly operationCoordinator?: DatabaseOperationCoordinator,
   ) {}
 
   isUpdating(): boolean {
@@ -56,6 +58,8 @@ export class FeedService {
     if (this.updateInProgress) {
       throw new Error("已有订阅更新正在进行");
     }
+    const releaseOperation =
+      this.operationCoordinator?.acquireOperation("feed-update");
     this.updateInProgress = true;
     const startedAt = new Date().toISOString();
     try {
@@ -92,6 +96,7 @@ export class FeedService {
       return results;
     } finally {
       this.updateInProgress = false;
+      releaseOperation?.();
     }
   }
 
@@ -169,7 +174,6 @@ export class FeedService {
         feedId,
         parsed.items,
       );
-      this.hooks.onNewItems(stored.insertedIds);
       return {
         feedId,
         feedName: feed.name,
@@ -207,7 +211,7 @@ export class FeedService {
       } catch (error) {
         lastError = error;
         if (attempt < 2) {
-          await delay(1_000 * 2 ** attempt);
+          await delay(1_000 * 2 ** attempt, this.timerWindow);
         }
       }
     }
@@ -247,6 +251,11 @@ function decodeXmlEntities(value: string): string {
     .replace(/&#39;/g, "'");
 }
 
-function delay(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+function delay(
+  milliseconds: number,
+  timerWindow: Pick<Window, "setTimeout">,
+): Promise<void> {
+  return new Promise((resolve) =>
+    timerWindow.setTimeout(resolve, milliseconds),
+  );
 }

@@ -436,6 +436,7 @@ export class RssRepository {
     const { where, params } = this.itemWhere(query);
     params.$translationTarget = query.targetLanguage ?? "zh-CN";
     const limit = Math.max(1, Math.min(query.limit ?? 100, 500));
+    const offset = Math.max(0, Math.floor(query.offset ?? 0));
     return this.database
       .query<Row>(
         `
@@ -447,18 +448,19 @@ export class RssRepository {
         FROM items i
         LEFT JOIN recommendation_scores rs ON rs.item_id=i.id
         LEFT JOIN translations tt
-          ON tt.item_id=i.id AND tt.field='title' AND tt.status='succeeded'
+          ON tt.item_id=i.id AND tt.field='title'
           AND tt.target_language=$translationTarget
         LEFT JOIN translations ta
-          ON ta.item_id=i.id AND ta.field='abstract' AND ta.status='succeeded'
+          ON ta.item_id=i.id AND ta.field='abstract'
           AND ta.target_language=$translationTarget
         ${where}
         ORDER BY
           CASE rs.final_tier WHEN 'high' THEN 0 WHEN 'pending' THEN 1
             WHEN 'low' THEN 3 ELSE 2 END,
+          COALESCE(rs.keyword_score,-1) DESC,
           COALESCE(i.pub_date,i.first_seen_at) DESC,
           i.id DESC
-        LIMIT ${limit}
+        LIMIT ${limit} OFFSET ${offset}
         `,
         params,
       )
@@ -474,10 +476,10 @@ export class RssRepository {
       FROM items i
       LEFT JOIN recommendation_scores rs ON rs.item_id=i.id
       LEFT JOIN translations tt
-        ON tt.item_id=i.id AND tt.field='title' AND tt.status='succeeded'
+        ON tt.item_id=i.id AND tt.field='title'
         AND tt.target_language=$target
       LEFT JOIN translations ta
-        ON ta.item_id=i.id AND ta.field='abstract' AND ta.status='succeeded'
+        ON ta.item_id=i.id AND ta.field='abstract'
         AND ta.target_language=$target
       WHERE i.id=$id
       `,
@@ -832,9 +834,8 @@ export class RssRepository {
         return;
       }
       db.run("DELETE FROM recommendation_scores");
-      for (const keyword of input.keywords) {
-        db.run(
-          `
+      const keywordStatement = db.prepare(
+        `
           INSERT INTO recommendation_keywords(
             keyword,auto_weight,positive_count,negative_count,model_version
           ) VALUES ($keyword,$weight,$positive,$negative,$version)
@@ -845,32 +846,41 @@ export class RssRepository {
             model_version=excluded.model_version,
             updated_at=CURRENT_TIMESTAMP
           `,
-          {
+      );
+      try {
+        for (const keyword of input.keywords) {
+          keywordStatement.run({
             $keyword: keyword.keyword,
             $weight: keyword.autoWeight,
             $positive: keyword.positiveCount,
             $negative: keyword.negativeCount,
             $version: input.modelVersion,
-          },
-        );
+          });
+        }
+      } finally {
+        keywordStatement.free();
       }
-      for (const score of input.scores) {
-        db.run(
-          `
+      const scoreStatement = db.prepare(
+        `
           INSERT INTO recommendation_scores(
             item_id,keyword_score,keyword_tier,final_tier,matched_keywords,
             model_version,content_hash
           ) VALUES ($itemId,$score,$tier,$tier,$matched,$version,$hash)
           `,
-          {
+      );
+      try {
+        for (const score of input.scores) {
+          scoreStatement.run({
             $itemId: score.itemId,
             $score: score.score,
             $tier: score.tier,
             $matched: score.matchedKeywords,
             $version: input.modelVersion,
             $hash: score.contentHash,
-          },
-        );
+          });
+        }
+      } finally {
+        scoreStatement.free();
       }
     });
   }

@@ -14,9 +14,11 @@ import {
   ITEM_STATUSES,
   type Feed,
   type FeedInput,
+  type ItemQuery,
   type ItemStatus,
   type RssItem,
 } from "../models/domain";
+import { executeUiAction } from "./ui-action";
 
 type Page = "reader" | "feeds" | "analytics";
 
@@ -34,13 +36,22 @@ const STATUS_LABELS: Record<ItemStatus, string> = {
   expired: "已过期",
 };
 
+const READER_BATCH_SIZE = 100;
+
 export class RssReaderView extends ItemView {
   private page: Page = "reader";
   private status: ItemStatus = "unread";
   private lastAction: LastAction | null = null;
   private translationEnabled = false;
   private titleObserver: IntersectionObserver | null = null;
+  private loadMoreObserver: IntersectionObserver | null = null;
   private requestedTitleIds = new Set<number>();
+  private readerItems: RssItem[] = [];
+  private readerMatched = 0;
+  private readerList: HTMLElement | null = null;
+  private readerCaption: HTMLElement | null = null;
+  private readerSentinel: HTMLElement | null = null;
+  private loadingMore = false;
   private rendering = false;
   private renderAgain = false;
 
@@ -56,7 +67,7 @@ export class RssReaderView extends ItemView {
   }
 
   getDisplayText(): string {
-    return "Academic RSS Reader";
+    return "Academic RSS reader";
   }
 
   getIcon(): string {
@@ -64,12 +75,13 @@ export class RssReaderView extends ItemView {
   }
 
   async onOpen(): Promise<void> {
-    await this.plugin.prepareDatabaseOnViewOpen();
+    this.plugin.prepareDatabaseOnViewOpen();
     await this.refresh();
   }
 
   async onClose(): Promise<void> {
     this.titleObserver?.disconnect();
+    this.loadMoreObserver?.disconnect();
   }
 
   async refresh(): Promise<void> {
@@ -81,8 +93,16 @@ export class RssReaderView extends ItemView {
     try {
       this.titleObserver?.disconnect();
       this.titleObserver = null;
+      this.loadMoreObserver?.disconnect();
+      this.loadMoreObserver = null;
+      this.readerItems = [];
+      this.readerMatched = 0;
+      this.readerList = null;
+      this.readerCaption = null;
+      this.readerSentinel = null;
+      this.loadingMore = false;
       const container = this.containerEl.children[1];
-      if (!(container instanceof HTMLElement)) {
+      if (!container?.instanceOf(HTMLElement)) {
         return;
       }
       container.empty();
@@ -127,7 +147,7 @@ export class RssReaderView extends ItemView {
         this.plugin.settings.targetLanguage,
       );
       const title = card.querySelector(".rss-reader__item-title");
-      if (!item || !(title instanceof HTMLElement)) {
+      if (!item || !title?.instanceOf(HTMLElement)) {
         continue;
       }
       title.empty();
@@ -139,7 +159,7 @@ export class RssReaderView extends ItemView {
     const header = container.createDiv({ cls: "rss-reader__header" });
     const title = header.createDiv({ cls: "rss-reader__brand" });
     setIcon(title.createSpan(), "rss");
-    title.createEl("h2", { text: "Academic RSS Reader" });
+    title.createEl("h2", { text: "Academic RSS reader" });
 
     const navigation = header.createDiv({ cls: "rss-reader__navigation" });
     for (const [page, label, icon] of [
@@ -149,12 +169,16 @@ export class RssReaderView extends ItemView {
     ] as Array<[Page, string, string]>) {
       const button = navigation.createEl("button", {
         cls: this.page === page ? "mod-cta" : "",
+        attr:
+          this.page === page
+            ? { "aria-current": "page" }
+            : {},
       });
       setIcon(button.createSpan(), icon);
       button.createSpan({ text: label });
       button.addEventListener("click", () => {
         this.page = page;
-        void this.refresh();
+        runUiAction(() => this.refresh(), button);
       });
     }
   }
@@ -174,7 +198,7 @@ export class RssReaderView extends ItemView {
     if (this.plugin.databaseState !== "initializing") {
       const button = setup.createEl("button", {
         cls: "mod-cta",
-        text: "打开 Academic RSS Reader 设置",
+        text: "打开 academic RSS reader 设置",
       });
       button.addEventListener("click", () => this.plugin.openSettings());
     }
@@ -186,12 +210,15 @@ export class RssReaderView extends ItemView {
     for (const status of ITEM_STATUSES) {
       const button = baskets.createEl("button", {
         cls: this.status === status ? "rss-reader__basket is-active" : "rss-reader__basket",
+        attr: {
+          "aria-pressed": String(this.status === status),
+        },
       });
       button.createSpan({ text: STATUS_LABELS[status] });
       button.createEl("strong", { text: String(counts[status]) });
       button.addEventListener("click", () => {
         this.status = status;
-        void this.refresh();
+        runUiAction(() => this.refresh(), button);
       });
     }
 
@@ -203,14 +230,15 @@ export class RssReaderView extends ItemView {
       status: this.status,
       query: "",
       feedIds: [],
-      limit: 500,
+      limit: READER_BATCH_SIZE,
+      offset: 0,
       targetLanguage: this.plugin.settings.targetLanguage,
     };
-    const matched = this.plugin.repository.countItems(query);
-    const items = this.plugin.repository.listItems(query);
-    container.createEl("p", {
+    this.readerMatched = this.plugin.repository.countItems(query);
+    this.readerItems = this.plugin.repository.listItems(query);
+    this.readerCaption = container.createEl("p", {
       cls: "rss-reader__caption",
-      text: `当前篮子共有 ${matched} 条，页面显示 ${items.length} 条。`,
+      text: this.readerCaptionText(),
     });
 
     const actions = container.createDiv({
@@ -251,20 +279,25 @@ export class RssReaderView extends ItemView {
       },
     );
     translateButton.toggleClass("is-active", this.translationEnabled);
+    translateButton.setAttribute(
+      "aria-pressed",
+      String(this.translationEnabled),
+    );
 
-    if (items.length === 0) {
+    if (this.readerItems.length === 0) {
       container.createDiv({
         cls: "rss-reader__empty-state",
         text: "这个篮子里当前没有文献。",
       });
     } else {
-      const list = container.createDiv({ cls: "rss-reader__list" });
-      for (const item of items) {
-        this.renderItemCard(list, item);
+      this.readerList = container.createDiv({ cls: "rss-reader__list" });
+      for (const item of this.readerItems) {
+        this.renderItemCard(this.readerList, item);
       }
       if (this.translationEnabled) {
-        this.observeVisibleTitles(list, items);
+        this.observeVisibleTitles(this.readerList, this.readerItems);
       }
+      this.renderLoadMoreSentinel(container, query);
     }
   }
 
@@ -283,9 +316,98 @@ export class RssReaderView extends ItemView {
     this.renderStatusActions(actions, item);
     if (item.link) {
       this.actionButton(actions, "打开原文", "external-link", () => {
-        window.open(item.link, "_external");
+        this.viewWindow()?.open(item.link, "_external");
       });
     }
+  }
+
+  private renderLoadMoreSentinel(
+    container: HTMLElement,
+    query: ItemQuery,
+  ): void {
+    this.readerSentinel = container.createEl("p", {
+      cls: "rss-reader__load-status",
+      text:
+        this.readerItems.length >= this.readerMatched
+          ? "已加载全部文献"
+          : "继续向下滚动以加载更多",
+      attr: {
+        role: "status",
+        "aria-live": "polite",
+      },
+    });
+    if (this.readerItems.length >= this.readerMatched) {
+      return;
+    }
+    const IntersectionObserverConstructor =
+      container.ownerDocument.defaultView?.IntersectionObserver;
+    if (!IntersectionObserverConstructor) {
+      return;
+    }
+    this.loadMoreObserver = new IntersectionObserverConstructor(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          runUiAction(() => this.loadMoreReaderItems(query));
+        }
+      },
+      {
+        root: this.containerEl,
+        rootMargin: "800px 0px",
+        threshold: 0.01,
+      },
+    );
+    this.loadMoreObserver.observe(this.readerSentinel);
+  }
+
+  private async loadMoreReaderItems(query: ItemQuery): Promise<void> {
+    if (
+      this.loadingMore ||
+      !this.readerList ||
+      !this.readerSentinel ||
+      this.readerItems.length >= this.readerMatched
+    ) {
+      return;
+    }
+    this.loadingMore = true;
+    this.readerSentinel.setText("正在加载更多文献……");
+    this.readerSentinel.setAttribute("aria-busy", "true");
+    try {
+      await Promise.resolve();
+      const existingIds = new Set(
+        this.readerItems.map((item) => item.id),
+      );
+      const nextItems = this.plugin.repository
+        .listItems({
+          ...query,
+          limit: READER_BATCH_SIZE,
+          offset: this.readerItems.length,
+        })
+        .filter((item) => !existingIds.has(item.id));
+      for (const item of nextItems) {
+        this.readerItems.push(item);
+        this.renderItemCard(this.readerList, item);
+      }
+      this.readerCaption?.setText(this.readerCaptionText());
+      if (this.translationEnabled) {
+        this.observeVisibleTitles(this.readerList, this.readerItems);
+      }
+      if (
+        nextItems.length === 0 ||
+        this.readerItems.length >= this.readerMatched
+      ) {
+        this.loadMoreObserver?.disconnect();
+        this.readerSentinel.setText("已加载全部文献");
+      } else {
+        this.readerSentinel.setText("继续向下滚动以加载更多");
+      }
+    } finally {
+      this.loadingMore = false;
+      this.readerSentinel?.removeAttribute("aria-busy");
+    }
+  }
+
+  private readerCaptionText(): string {
+    return `当前篮子共有 ${this.readerMatched} 条，页面显示 ${this.readerItems.length} 条。`;
   }
 
   private renderTitle(container: HTMLElement, item: RssItem): void {
@@ -295,6 +417,7 @@ export class RssReaderView extends ItemView {
           ? item.translatedTitle
           : item.title,
     });
+    this.renderKeywordRelevance(container, item);
     if (
       this.translationEnabled &&
       item.titleTranslationStatus === "failed"
@@ -302,6 +425,21 @@ export class RssReaderView extends ItemView {
       container.createSpan({
         cls: "rss-reader__translation-status is-error",
         text: "翻译失败",
+        attr: {
+          role: "alert",
+        },
+      });
+    } else if (
+      this.translationEnabled &&
+      item.titleTranslationStatus === "pending"
+    ) {
+      container.createSpan({
+        cls: "rss-reader__translation-status",
+        text: "等待翻译……",
+        attr: {
+          role: "status",
+          "aria-live": "polite",
+        },
       });
     } else if (
       this.translationEnabled &&
@@ -310,8 +448,40 @@ export class RssReaderView extends ItemView {
       container.createSpan({
         cls: "rss-reader__translation-status",
         text: "正在翻译……",
+        attr: {
+          role: "status",
+          "aria-live": "polite",
+        },
       });
     }
+  }
+
+  private renderKeywordRelevance(
+    container: HTMLElement,
+    item: RssItem,
+  ): void {
+    if (item.keywordScore === null) {
+      return;
+    }
+    const tier =
+      item.keywordScore >= 70
+        ? "high"
+        : item.keywordScore <= 30
+          ? "low"
+          : "pending";
+    const label =
+      tier === "high"
+        ? "高相关"
+        : tier === "low"
+          ? "低相关"
+          : "待判断";
+    container.createSpan({
+      cls: `rss-reader__keyword-relevance is-${tier}`,
+      text: label,
+      attr: {
+        "aria-label": `关键词相关度：${label}`,
+      },
+    });
   }
 
   private observeVisibleTitles(
@@ -321,11 +491,21 @@ export class RssReaderView extends ItemView {
     const cards = Array.from(
       list.querySelectorAll<HTMLElement>(".rss-reader__item"),
     );
-    this.titleObserver = new IntersectionObserver(
+    const IntersectionObserverConstructor =
+      list.ownerDocument.defaultView?.IntersectionObserver;
+    if (!IntersectionObserverConstructor) {
+      return;
+    }
+    this.titleObserver?.disconnect();
+    this.titleObserver = new IntersectionObserverConstructor(
       (entries) => {
         const visibleIndexes = entries
           .filter((entry) => entry.isIntersecting)
-          .map((entry) => cards.indexOf(entry.target as HTMLElement))
+          .map((entry) =>
+            entry.target.instanceOf(HTMLElement)
+              ? cards.indexOf(entry.target)
+              : -1,
+          )
           .filter((index) => index >= 0);
         if (visibleIndexes.length === 0) {
           return;
@@ -352,10 +532,18 @@ export class RssReaderView extends ItemView {
             continue;
           }
           this.requestedTitleIds.add(item.id);
-          this.plugin.translationService.requestManual(
-            item.id,
-            "title",
-            item.titleTranslationStatus === "failed",
+          runUiAction(
+            () =>
+              this.plugin.translationService.requestManual(
+                item.id,
+                "title",
+                item.titleTranslationStatus === "failed",
+              ),
+            undefined,
+            (error) => {
+              this.requestedTitleIds.delete(item.id);
+              new Notice(errorMessage(error), 10_000);
+            },
           );
         }
       },
@@ -409,6 +597,9 @@ export class RssReaderView extends ItemView {
       panel.createEl("p", {
         cls: "rss-reader__warning",
         text: summary.errorMessage,
+        attr: {
+          role: "alert",
+        },
       });
     } else if (summary.modelVersion) {
       panel.createEl("p", {
@@ -418,9 +609,12 @@ export class RssReaderView extends ItemView {
     }
     const actions = panel.createDiv({ cls: "rss-reader__item-actions" });
     this.actionButton(actions, "更新关键词推荐", "sparkles", async () => {
-      const notice = new Notice("正在重建关键词模型……", 0);
+      const notice = new Notice("正在准备更新关键词推荐……", 0);
       try {
-        const result = await this.plugin.recommendationService.rebuild();
+        await this.yieldToView();
+        const result = await this.plugin.recommendationService.rebuild(
+          (message) => notice.setMessage(message),
+        );
         notice.setMessage(
           `推荐已更新：高 ${result.highCount}，待判断 ${result.pendingCount}，低 ${result.lowCount}`,
         );
@@ -429,7 +623,7 @@ export class RssReaderView extends ItemView {
           error instanceof Error ? error.message : String(error),
         );
       } finally {
-        window.setTimeout(() => notice.hide(), 5000);
+        this.viewWindow()?.setTimeout(() => notice.hide(), 5000);
         await this.refresh();
       }
     });
@@ -445,7 +639,7 @@ export class RssReaderView extends ItemView {
           error instanceof Error ? error.message : String(error),
         );
       } finally {
-        window.setTimeout(() => notice.hide(), 5000);
+        this.viewWindow()?.setTimeout(() => notice.hide(), 5000);
         await this.refresh();
       }
     });
@@ -530,13 +724,15 @@ export class RssReaderView extends ItemView {
       new ToggleComponent(enabledCell)
         .setValue(feed.enabled)
         .setTooltip(feed.enabled ? "停用订阅" : "启用订阅")
-        .onChange(async (enabled) => {
-          await this.plugin.feedService.updateFeed(feed.id, {
-            name: feed.name,
-            url: feed.url,
-            enabled,
+        .onChange((enabled) => {
+          runUiAction(async () => {
+            await this.plugin.feedService.updateFeed(feed.id, {
+              name: feed.name,
+              url: feed.url,
+              enabled,
+            });
+            await this.refresh();
           });
-          await this.refresh();
         });
       row.createEl("td", { text: String(feed.itemCount) });
       row.createEl("td", { text: feed.lastCheckedAt ?? "尚未更新" });
@@ -644,7 +840,7 @@ export class RssReaderView extends ItemView {
         error instanceof Error ? error.message : String(error),
       );
     } finally {
-      window.setTimeout(() => notice.hide(), 5000);
+      this.viewWindow()?.setTimeout(() => notice.hide(), 5000);
       await this.refresh();
     }
   }
@@ -673,8 +869,24 @@ export class RssReaderView extends ItemView {
     setIcon(button.createSpan(), icon);
     button.createSpan({ text: label });
     button.disabled = disabled;
-    button.addEventListener("click", () => void action());
+    button.addEventListener("click", () => {
+      runUiAction(action, button);
+    });
     return button;
+  }
+
+  private viewWindow(): Window | null {
+    return this.containerEl.ownerDocument.defaultView;
+  }
+
+  private async yieldToView(): Promise<void> {
+    const viewWindow = this.viewWindow();
+    if (!viewWindow) {
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      viewWindow.setTimeout(resolve, 0);
+    });
   }
 }
 
@@ -767,8 +979,8 @@ class FeedModal extends Modal {
       button
         .setButtonText("保存")
         .setCta()
-        .onClick(async () => {
-          try {
+        .onClick(() => {
+          runUiAction(async () => {
             const input = { name, url, enabled };
             if (this.feed) {
               await this.plugin.feedService.updateFeed(this.feed.id, input);
@@ -777,11 +989,7 @@ class FeedModal extends Modal {
             }
             this.close();
             await this.onSaved();
-          } catch (error) {
-            new Notice(
-              error instanceof Error ? error.message : String(error),
-            );
-          }
+          }, button.buttonEl);
         }),
     );
   }
@@ -802,7 +1010,7 @@ class FeedImportModal extends Modal {
   onOpen(): void {
     this.setTitle("批量导入订阅");
     this.contentEl.createEl("p", {
-      text: "支持 OPML、XML、TXT、粘贴内容或逐行 URL。重复 URL 会跳过。",
+      text: "支持 opml、XML、txt、粘贴内容或逐行 URL。重复 URL 会跳过。",
     });
     const file = this.contentEl.createEl("input", {
       type: "file",
@@ -810,9 +1018,11 @@ class FeedImportModal extends Modal {
     });
     const textarea = this.contentEl.createEl("textarea", {
       cls: "rss-reader__import-text",
-      attr: { placeholder: "粘贴 OPML 或 RSS URL" },
+      attr: { placeholder: "粘贴 opml 或 RSS URL" },
     });
     const preview = this.contentEl.createDiv();
+    preview.setAttribute("role", "status");
+    preview.setAttribute("aria-live", "polite");
     let candidates: FeedInput[] = [];
     const updatePreview = async (): Promise<void> => {
       let content = textarea.value;
@@ -821,27 +1031,44 @@ class FeedImportModal extends Modal {
         content = `${await selected.text()}\n${content}`;
       }
       candidates = this.plugin.feedService.parseImportText(content);
+      preview.setAttribute("role", "status");
       preview.setText(`识别到 ${candidates.length} 个候选订阅`);
     };
-    textarea.addEventListener("change", () => void updatePreview());
-    file.addEventListener("change", () => void updatePreview());
+    const showPreviewError = (error: unknown): void => {
+      preview.setText(`预览失败：${errorMessage(error)}`);
+      preview.setAttribute("role", "alert");
+    };
+    textarea.addEventListener("change", () => {
+      runUiAction(updatePreview, undefined, showPreviewError);
+    });
+    file.addEventListener("change", () => {
+      runUiAction(updatePreview, undefined, showPreviewError);
+    });
     new Setting(this.contentEl)
       .addButton((button) =>
-        button.setButtonText("预览").onClick(updatePreview),
+        button.setButtonText("预览").onClick(() => {
+          runUiAction(
+            updatePreview,
+            button.buttonEl,
+            showPreviewError,
+          );
+        }),
       )
       .addButton((button) =>
         button
           .setButtonText("导入")
           .setCta()
-          .onClick(async () => {
-            await updatePreview();
-            const result =
-              await this.plugin.feedService.importFeeds(candidates);
-            new Notice(
-              `新增 ${result.added}，跳过 ${result.skipped}，失败 ${result.errors.length}`,
-            );
-            this.close();
-            await this.onSaved();
+          .onClick(() => {
+            runUiAction(async () => {
+              await updatePreview();
+              const result =
+                await this.plugin.feedService.importFeeds(candidates);
+              new Notice(
+                `新增 ${result.added}，跳过 ${result.skipped}，失败 ${result.errors.length}`,
+              );
+              this.close();
+              await this.onSaved();
+            }, button.buttonEl, showPreviewError);
           }),
       );
   }
@@ -925,28 +1152,32 @@ class KeywordModal extends Modal {
         button
           .setButtonText("保存修正")
           .setCta()
-          .onClick(async () => {
+          .onClick(() => {
+            runUiAction(async () => {
+              if (!keyword) {
+                new Notice("请输入关键词");
+                return;
+              }
+              await this.plugin.repository.saveKeywordOverride(
+                keyword,
+                direction,
+                weight,
+                disabled,
+              );
+              this.render();
+            }, button.buttonEl);
+          }),
+      )
+      .addButton((button) =>
+        button.setButtonText("恢复自动权重").onClick(() => {
+          runUiAction(async () => {
             if (!keyword) {
               new Notice("请输入关键词");
               return;
             }
-            await this.plugin.repository.saveKeywordOverride(
-              keyword,
-              direction,
-              weight,
-              disabled,
-            );
+            await this.plugin.repository.resetKeywordOverride(keyword);
             this.render();
-          }),
-      )
-      .addButton((button) =>
-        button.setButtonText("恢复自动权重").onClick(async () => {
-          if (!keyword) {
-            new Notice("请输入关键词");
-            return;
-          }
-          await this.plugin.repository.resetKeywordOverride(keyword);
-          this.render();
+          }, button.buttonEl);
         }),
       );
   }
@@ -972,9 +1203,11 @@ class ConfirmModal extends Modal {
         button
           .setButtonText("确认")
           .setClass("mod-warning")
-          .onClick(async () => {
-            await this.onConfirm();
-            this.close();
+          .onClick(() => {
+            runUiAction(async () => {
+              await this.onConfirm();
+              this.close();
+            }, button.buttonEl);
           }),
       );
   }
@@ -1028,4 +1261,22 @@ function primitiveText(value: unknown, fallback: string): string {
   return typeof value === "string" || typeof value === "number"
     ? String(value)
     : fallback;
+}
+
+function runUiAction(
+  action: () => void | Promise<void>,
+  button?: HTMLButtonElement,
+  onError?: (error: unknown) => void,
+): void {
+  executeUiAction(action, button, (error: unknown) => {
+      if (onError) {
+        onError(error);
+      } else {
+        new Notice(errorMessage(error), 10_000);
+      }
+    });
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

@@ -9,8 +9,11 @@ import {
 import type RssReaderPlugin from "../main";
 import { DirectorySuggest } from "./directory-suggest";
 
+const DATABASE_FILE_NAME = ["rss", "reader.sqlite3"].join("-");
+
 export class RssReaderSettingTab extends PluginSettingTab {
   private directorySuggest: DirectorySuggest | null = null;
+  private inspectionRequest = 0;
 
   constructor(app: App, private readonly plugin: RssReaderPlugin) {
     super(app, plugin);
@@ -23,26 +26,39 @@ export class RssReaderSettingTab extends PluginSettingTab {
     containerEl.addClass("academic-rss-reader-settings");
 
     new Setting(containerEl).setName("数据库存储").setHeading();
-    containerEl.createEl("p", {
+    const storageDescription = containerEl.createEl("p", {
       cls: "setting-item-description",
-      text: "请选择当前 Vault 内的数据目录。运行数据库保存为 rss-reader.sqlite3，所有保护性备份保存在 backups 子目录。",
     });
+    storageDescription.appendText(
+      "请选择当前 vault 内的数据目录。运行数据库保存为 ",
+    );
+    storageDescription.createEl("code", {
+      text: DATABASE_FILE_NAME,
+    });
+    storageDescription.appendText(
+      "，所有保护性备份保存在 backups 子目录。",
+    );
     let dataDirectory = this.plugin.settings.dataDirectory;
     const inspection = containerEl.createEl("p", {
       cls: "setting-item-description",
       text: this.databaseStatusText(),
+      attr: {
+        role: "status",
+        "aria-live": "polite",
+      },
     });
     const databaseSetting = new Setting(containerEl)
-      .setName("Academic RSS Reader 数据目录")
-      .setDesc("输入相对于 Vault 根目录的路径；输入本身不会创建或载入数据库。")
+      .setName("Academic RSS reader 数据目录")
+      .setDesc("输入相对于 vault 根目录的路径；输入本身不会创建或载入数据库。")
       .addText((text) => {
         text
-          .setPlaceholder("Assets/RSS Reader Data")
+          .setPlaceholder("Assets/RSS reader data")
           .setValue(dataDirectory)
-          .onChange(async (value) => {
+          .onChange((value) => {
             dataDirectory = value;
-            inspection.setText(
-              await this.inspectDirectoryText(dataDirectory),
+            this.updateDirectoryInspection(
+              dataDirectory,
+              inspection,
             );
           });
         this.directorySuggest = new DirectorySuggest(
@@ -51,34 +67,38 @@ export class RssReaderSettingTab extends PluginSettingTab {
           this.plugin.getVaultRoot(),
           (value) => {
             dataDirectory = value;
-            void this.inspectDirectoryText(value).then((message) =>
-              inspection.setText(message),
-            );
+            this.updateDirectoryInspection(value, inspection);
           },
         );
       });
     if (this.plugin.isDatabaseReady()) {
       databaseSetting
         .addButton((button) =>
-          button.setButtonText("迁移当前库").onClick(async () => {
-            await this.runDatabaseAction(() =>
-              this.plugin.switchDataDirectory(dataDirectory, "migrate"),
+          button.setButtonText("迁移当前库").onClick(() => {
+            this.runButtonAction(button.buttonEl, () =>
+              this.runDatabaseAction(() =>
+                this.plugin.switchDataDirectory(dataDirectory, "migrate"),
+              ),
             );
           }),
         )
         .addButton((button) =>
-          button.setButtonText("载入目标库").onClick(async () => {
-            await this.runDatabaseAction(() =>
-              this.plugin.switchDataDirectory(dataDirectory, "load"),
+          button.setButtonText("载入目标库").onClick(() => {
+            this.runButtonAction(button.buttonEl, () =>
+              this.runDatabaseAction(() =>
+                this.plugin.switchDataDirectory(dataDirectory, "load"),
+              ),
             );
           }),
         );
     } else {
       databaseSetting
         .addButton((button) =>
-          button.setButtonText("创建新数据库").onClick(async () => {
-            await this.runDatabaseAction(() =>
-              this.plugin.createDatabase(dataDirectory),
+          button.setButtonText("创建新数据库").onClick(() => {
+            this.runButtonAction(button.buttonEl, () =>
+              this.runDatabaseAction(() =>
+                this.plugin.createDatabase(dataDirectory),
+              ),
             );
           }),
         )
@@ -86,9 +106,11 @@ export class RssReaderSettingTab extends PluginSettingTab {
           button
             .setButtonText("载入数据库")
             .setCta()
-            .onClick(async () => {
-              await this.runDatabaseAction(() =>
-                this.plugin.loadDatabase(dataDirectory),
+            .onClick(() => {
+              this.runButtonAction(button.buttonEl, () =>
+                this.runDatabaseAction(() =>
+                  this.plugin.loadDatabase(dataDirectory),
+                ),
               );
             }),
         );
@@ -105,28 +127,24 @@ export class RssReaderSettingTab extends PluginSettingTab {
         .setName("数据库保护")
         .setDesc("备份文件保存在当前数据目录的 backups 子目录。")
         .addButton((button) =>
-          button.setButtonText("立即备份").onClick(async () => {
-            try {
+          button.setButtonText("立即备份").onClick(() => {
+            this.runButtonAction(button.buttonEl, async () => {
               const destination =
                 await this.plugin.createManualBackup();
               new Notice(`数据库已备份到 ${destination}`, 10_000);
-            } catch (error) {
-              this.showError(error);
-            }
+            });
           }),
         )
         .addButton((button) =>
-          button.setButtonText("恢复最近备份").onClick(async () => {
-            try {
+          button.setButtonText("恢复最近备份").onClick(() => {
+            this.runButtonAction(button.buttonEl, async () => {
               const source =
                 await this.plugin.restoreLatestDatabaseBackup();
               new Notice(
                 `已从 ${source} 恢复数据库；恢复前已自动备份。`,
                 10_000,
               );
-            } catch (error) {
-              this.showError(error);
-            }
+            });
           }),
         );
     }
@@ -134,19 +152,22 @@ export class RssReaderSettingTab extends PluginSettingTab {
       containerEl.createEl("p", {
         cls: "rss-reader__warning",
         text: `数据库未载入，原文件未修改。错误：${this.plugin.databaseError}`,
+        attr: {
+          role: "alert",
+        },
       });
     }
 
     new Setting(containerEl).setName("订阅更新").setHeading();
     new Setting(containerEl)
       .setName("打开阅读器时自动更新")
-      .setDesc("每次启动 Obsidian 后，首次打开 Academic RSS Reader 时在后台静默更新全部启用订阅。")
+      .setDesc("每次启动 Obsidian 后，首次打开 academic RSS reader 时在后台静默更新全部启用订阅。")
       .addToggle((toggle) =>
         toggle
           .setValue(this.plugin.settings.autoUpdateOnStartup)
-          .onChange(async (value) => {
+          .onChange((value) => {
             this.plugin.settings.autoUpdateOnStartup = value;
-            await this.plugin.saveSettings();
+            this.runAsync(() => this.plugin.saveSettings());
           }),
       );
     new Setting(containerEl)
@@ -155,11 +176,11 @@ export class RssReaderSettingTab extends PluginSettingTab {
       .addText((text) =>
         text
           .setValue(String(this.plugin.settings.hiddenExpireDays))
-          .onChange(async (value) => {
+          .onChange((value) => {
             const days = Number.parseInt(value, 10);
             if (Number.isFinite(days) && days >= 1) {
               this.plugin.settings.hiddenExpireDays = days;
-              await this.plugin.saveSettings();
+              this.runAsync(() => this.plugin.saveSettings());
             }
           }),
       );
@@ -177,9 +198,9 @@ export class RssReaderSettingTab extends PluginSettingTab {
           .addOption("zh-CN", "简体中文")
           .addOption("en", "English")
           .setValue(this.plugin.settings.targetLanguage)
-          .onChange(async (value) => {
+          .onChange((value) => {
             this.plugin.settings.targetLanguage = value;
-            await this.plugin.saveSettings();
+            this.runAsync(() => this.plugin.saveSettings());
           }),
       );
     new Setting(containerEl).setName("LLM 推荐复核").setHeading();
@@ -187,33 +208,33 @@ export class RssReaderSettingTab extends PluginSettingTab {
       .setName("API 地址")
       .addText((text) =>
         text
-          .setPlaceholder("https://api.openai.com/v1")
+          .setPlaceholder("HTTPS://api.OpenAI.com/v1")
           .setValue(this.plugin.settings.llmBaseUrl)
-          .onChange(async (value) => {
+          .onChange((value) => {
             this.plugin.settings.llmBaseUrl = value.trim();
-            await this.plugin.saveSettings();
+            this.runAsync(() => this.plugin.saveSettings());
           }),
       );
     new Setting(containerEl)
-      .setName("API Key")
+      .setName("API key")
       .setDesc("选择或创建 Obsidian SecretStorage 条目；data.json 只保存条目名称。")
       .addComponent((container) =>
         new SecretComponent(this.app, container)
           .setValue(this.plugin.settings.llmSecretId)
-          .onChange(async (value) => {
+          .onChange((value) => {
             this.plugin.settings.llmSecretId = value;
-            await this.plugin.saveSettings();
+            this.runAsync(() => this.plugin.saveSettings());
           }),
       );
     new Setting(containerEl)
       .setName("模型")
       .addText((text) =>
         text
-          .setPlaceholder("gpt-4.1-mini")
+          .setPlaceholder("GPT-4.1-mini")
           .setValue(this.plugin.settings.llmModel)
-          .onChange(async (value) => {
+          .onChange((value) => {
             this.plugin.settings.llmModel = value.trim();
-            await this.plugin.saveSettings();
+            this.runAsync(() => this.plugin.saveSettings());
           }),
       );
     new Setting(containerEl)
@@ -221,26 +242,21 @@ export class RssReaderSettingTab extends PluginSettingTab {
       .addTextArea((text) =>
         text
           .setValue(this.plugin.settings.userInterest)
-          .onChange(async (value) => {
+          .onChange((value) => {
             this.plugin.settings.userInterest = value.trim();
-            await this.plugin.saveSettings();
+            this.runAsync(() => this.plugin.saveSettings());
           }),
       );
     new Setting(containerEl)
       .setName("测试连接")
       .addButton((button) =>
-        button.setButtonText("测试").onClick(async () => {
-          if (!this.plugin.isDatabaseReady()) {
-            new Notice("请先配置并载入数据库");
-            return;
-          }
-          try {
+        button.setButtonText("测试").onClick(() => {
+          this.runButtonAction(button.buttonEl, async () => {
+            if (!this.plugin.isDatabaseReady()) {
+              throw new Error("请先配置并载入数据库");
+            }
             new Notice(await this.plugin.llmService.testConnection());
-          } catch (error) {
-            new Notice(
-              error instanceof Error ? error.message : String(error),
-            );
-          }
+          });
         }),
       );
 
@@ -279,17 +295,57 @@ export class RssReaderSettingTab extends PluginSettingTab {
     }
   }
 
+  private updateDirectoryInspection(
+    directory: string,
+    inspection: HTMLElement,
+  ): void {
+    const request = ++this.inspectionRequest;
+    this.runAsync(async () => {
+      const message = await this.inspectDirectoryText(directory);
+      if (request === this.inspectionRequest) {
+        inspection.setText(message);
+      }
+    });
+  }
+
   private async runDatabaseAction(
     action: () => Promise<void>,
   ): Promise<void> {
     try {
       await action();
       new Notice("数据库操作完成");
-      this.display();
+      this.redisplay();
     } catch (error) {
       this.showError(error);
-      this.display();
+      this.redisplay();
     }
+  }
+
+  private runAsync(action: () => Promise<void>): void {
+    void action().catch((error: unknown) => this.showError(error));
+  }
+
+  private runButtonAction(
+    button: HTMLButtonElement,
+    action: () => Promise<void>,
+  ): void {
+    if (button.disabled) {
+      return;
+    }
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+    void action()
+      .catch((error: unknown) => this.showError(error))
+      .finally(() => {
+        button.removeAttribute("aria-busy");
+        if (button.isConnected) {
+          button.disabled = false;
+        }
+      });
+  }
+
+  private redisplay(): void {
+    this.display();
   }
 
   private showError(error: unknown): void {

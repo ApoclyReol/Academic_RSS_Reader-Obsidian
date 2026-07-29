@@ -199,4 +199,93 @@ describe("database and repository", () => {
     ).toBe(1);
     expect(database.query("PRAGMA foreign_key_check")).toHaveLength(0);
   });
+
+  it("returns active translation states and stable item batches", async () => {
+    const feedId = await repository.addFeed({
+      name: "Batch journal",
+      url: "https://example.com/batch",
+      enabled: true,
+    });
+    const stored = await repository.upsertParsedItems(
+      feedId,
+      Array.from({ length: 205 }, (_, index) => ({
+        stableGuid: `batch-guid-${index}`,
+        title: `Batch paper ${index}`,
+        titleNorm: `batch paper ${index}`,
+        authors: "Author",
+        journal: "Batch journal",
+        year: "2026",
+        doi: "",
+        link: "",
+        pubDate: new Date(
+          Date.UTC(2026, 0, index + 1),
+        ).toISOString(),
+        summary: "",
+      })),
+    );
+    await database.write((db) => {
+      for (const [index, status] of [
+        "pending",
+        "translating",
+        "failed",
+      ].entries()) {
+        db.run(
+          `
+          INSERT INTO translations(
+            item_id,field,source_text,target_language,provider,
+            source_hash,status,attempt_count
+          ) VALUES (
+            $itemId,'title',$sourceText,'zh-CN','google-web',
+            $sourceHash,$status,0
+          )
+          `,
+          {
+            $itemId: stored.insertedIds[index]!,
+            $sourceText: `Batch paper ${index}`,
+            $sourceHash: `hash-${index}`,
+            $status: status,
+          },
+        );
+      }
+    });
+
+    const allItems = repository.listItems({
+      status: "unread",
+      limit: 500,
+      targetLanguage: "zh-CN",
+    });
+    for (const [index, status] of [
+      "pending",
+      "translating",
+      "failed",
+    ].entries()) {
+      expect(
+        allItems.find(
+          (item) => item.id === stored.insertedIds[index],
+        )?.titleTranslationStatus,
+      ).toBe(status);
+    }
+
+    const first = repository.listItems({
+      status: "unread",
+      limit: 100,
+      offset: 0,
+    });
+    const second = repository.listItems({
+      status: "unread",
+      limit: 100,
+      offset: 100,
+    });
+    const third = repository.listItems({
+      status: "unread",
+      limit: 100,
+      offset: 200,
+    });
+    expect(first).toHaveLength(100);
+    expect(second).toHaveLength(100);
+    expect(third).toHaveLength(5);
+    expect(
+      new Set([...first, ...second, ...third].map((item) => item.id)).size,
+    ).toBe(205);
+  });
 });

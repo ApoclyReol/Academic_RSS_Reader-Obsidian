@@ -1,18 +1,19 @@
 # Academic RSS Reader
 
-Academic RSS Reader v1.0.2 是面向学术文献初筛的 Obsidian 桌面插件。它在本地管理 RSS 订阅、五类文献篮子、标题翻译、个性化推荐和兴趣分析，不需要 Python sidecar。
+Academic RSS Reader v1.0.3 是面向学术文献初筛的 Obsidian 桌面插件。它在本地管理 RSS 订阅、五类文献篮子、标题翻译、个性化推荐和兴趣分析，不需要 Python sidecar。
 
 ## 功能
 
 - 添加、编辑、启停和删除订阅
 - 导入 OPML、XML、TXT、粘贴文本和逐行 RSS URL
-- 每次启动后首次打开阅读器时静默更新全部启用订阅，也可手动更新全部及单个订阅
+- 每次启动后首次打开阅读器时在后台更新全部启用订阅，并显示进度与结果通知；也可手动更新全部及单个订阅
 - 兼容 RSS 与 Atom，提取标题、作者、期刊、年份、DOI、链接和摘要
 - 沿用旧 Streamlit 的稳定 GUID、标题规范化和分层去重规则
 - 保留跨订阅关联、状态、推荐结果和旧数据库主数据
 - 未读、感兴趣、归档、隐藏、过期五个文献篮子
-- 列表状态处理、打开系统浏览器和会话内撤回
+- 文献列表每批连续加载 100 条，支持状态处理、打开系统浏览器和会话内撤回
 - TypeScript TF-IDF/逻辑回归推荐、人工关键词和 OpenAI 兼容 LLM 复核
+- 标题后显示彩色关键词相关度，并按最终分层、关键词得分和发布日期排序
 - 总体及分订阅兴趣分析
 
 ## 标题翻译
@@ -80,7 +81,7 @@ npm run package
 ```text
 build/
 ├── obsidian/academic-rss-reader/
-├── Academic-RSS-Reader-1.0.2.zip
+├── Academic-RSS-Reader-1.0.3.zip
 └── SHA256SUMS.txt
 ```
 
@@ -90,5 +91,6 @@ build/
 - [v1.0.0 发布说明](docs/V1_RELEASE.md)
 - [v1.0.1 发布说明](docs/V1_0_1_RELEASE.md)
 - [v1.0.2 发布说明](docs/V1_0_2_RELEASE.md)
+- [v1.0.3 发布说明](docs/V1_0_3_RELEASE.md)
 - [安全与隐私](SECURITY.md)
 - [版本记录](CHANGELOG.md)

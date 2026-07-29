@@ -2,6 +2,7 @@ import { requestUrl } from "obsidian";
 
 import type { RssReaderSettings } from "../models/settings";
 import { RssRepository } from "../repositories/rss-repository";
+import type { DatabaseOperationCoordinator } from "./database-operation-coordinator";
 import { parseTier } from "./relevance";
 
 export interface LlmReviewRun {
@@ -15,6 +16,7 @@ export class LlmService {
     private readonly repository: RssRepository,
     private readonly getSettings: () => RssReaderSettings,
     private readonly getApiKey: () => string,
+    private readonly operationCoordinator?: DatabaseOperationCoordinator,
   ) {}
 
   async testConnection(): Promise<string> {
@@ -30,34 +32,40 @@ export class LlmService {
   }
 
   async reviewPending(): Promise<LlmReviewRun> {
-    const settings = this.validatedSettings();
-    const result: LlmReviewRun = { high: 0, low: 0, failed: 0 };
-    for (const item of this.repository.listPendingLlmItems()) {
-      try {
-        const response = await this.complete(
-          settings,
-          [
-            "你正在帮助研究者筛选论文。",
-            `研究兴趣：${settings.userInterest || "未补充"}`,
-            `标题：${item.title}`,
-            `摘要：${item.summary}`,
-            `关键词分：${item.keywordScore ?? 50}`,
-            "判断论文是否值得优先阅读。只能返回 high 或 low。",
-          ].join("\n"),
-        );
-        const tier = parseTier(response);
-        await this.repository.saveLlmReview(item.id, tier, null);
-        result[tier] += 1;
-      } catch (error) {
-        result.failed += 1;
-        await this.repository.saveLlmReview(
-          item.id,
-          null,
-          error instanceof Error ? error.message : String(error),
-        );
+    const releaseOperation =
+      this.operationCoordinator?.acquireOperation("llm-review");
+    try {
+      const settings = this.validatedSettings();
+      const result: LlmReviewRun = { high: 0, low: 0, failed: 0 };
+      for (const item of this.repository.listPendingLlmItems()) {
+        try {
+          const response = await this.complete(
+            settings,
+            [
+              "你正在帮助研究者筛选论文。",
+              `研究兴趣：${settings.userInterest || "未补充"}`,
+              `标题：${item.title}`,
+              `摘要：${item.summary}`,
+              `关键词分：${item.keywordScore ?? 50}`,
+              "判断论文是否值得优先阅读。只能返回 high 或 low。",
+            ].join("\n"),
+          );
+          const tier = parseTier(response);
+          await this.repository.saveLlmReview(item.id, tier, null);
+          result[tier] += 1;
+        } catch (error) {
+          result.failed += 1;
+          await this.repository.saveLlmReview(
+            item.id,
+            null,
+            error instanceof Error ? error.message : String(error),
+          );
+        }
       }
+      return result;
+    } finally {
+      releaseOperation?.();
     }
-    return result;
   }
 
   private validatedSettings(): RssReaderSettings {

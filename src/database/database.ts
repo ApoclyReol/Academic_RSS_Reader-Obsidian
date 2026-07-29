@@ -16,6 +16,7 @@ import type {
 } from "sql.js";
 import initSqlJs from "sql.js/dist/sql-asm.js";
 
+import type { DatabaseOperationCoordinator } from "../services/database-operation-coordinator";
 import { CREATE_SCHEMA_SQL } from "./schema";
 
 export class RssDatabase {
@@ -25,7 +26,14 @@ export class RssDatabase {
 
   constructor(
     private readonly databasePath: string,
+    private operationCoordinator?: DatabaseOperationCoordinator,
   ) {}
+
+  setOperationCoordinator(
+    operationCoordinator: DatabaseOperationCoordinator,
+  ): void {
+    this.operationCoordinator = operationCoordinator;
+  }
 
   async initialize(options: { createIfMissing?: boolean } = {}): Promise<void> {
     await mkdir(dirname(this.databasePath), { recursive: true });
@@ -82,18 +90,20 @@ export class RssDatabase {
   }
 
   async write<T>(operation: (database: Database) => T): Promise<T> {
+    const releaseOperation =
+      this.operationCoordinator?.acquireOperation("database-write");
     let result!: T;
     const task = this.writeChain.then(async () => {
       this.raw.run("BEGIN IMMEDIATE");
       try {
         result = operation(this.raw);
         this.raw.run("COMMIT");
-        await this.persist();
       } catch (error) {
         this.raw.run("ROLLBACK");
         throw error;
       }
-    });
+      await this.persist();
+    }).finally(() => releaseOperation?.());
     this.writeChain = task.then(
       () => undefined,
       () => undefined,
@@ -117,10 +127,19 @@ export class RssDatabase {
     await this.writeChain;
     const sql = this.sql ?? (await this.loadSql());
     const next = new sql.Database(bytes);
-    next.run(CREATE_SCHEMA_SQL);
-    this.database?.close();
+    try {
+      next.run(CREATE_SCHEMA_SQL);
+      next.run(
+        "UPDATE translations SET status='pending' WHERE status='translating'",
+      );
+      await this.persistDatabase(next);
+    } catch (error) {
+      next.close();
+      throw error;
+    }
+    const previous = this.database;
     this.database = next;
-    await this.persist();
+    previous?.close();
   }
 
   exportBytes(): Uint8Array {
@@ -132,8 +151,12 @@ export class RssDatabase {
   }
 
   private async persist(): Promise<void> {
+    await this.persistDatabase(this.raw);
+  }
+
+  private async persistDatabase(database: Database): Promise<void> {
     const temporaryPath = `${this.databasePath}.tmp`;
-    await writeFile(temporaryPath, this.raw.export());
+    await writeFile(temporaryPath, database.export());
     try {
       await rename(temporaryPath, this.databasePath);
     } catch (error) {

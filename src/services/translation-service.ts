@@ -6,6 +6,7 @@ import type {
 } from "../models/domain";
 import type { RssReaderSettings } from "../models/settings";
 import { RssRepository } from "../repositories/rss-repository";
+import type { DatabaseOperationCoordinator } from "./database-operation-coordinator";
 import type { TranslationProvider } from "./translation-provider";
 
 type TaskPriority = 0 | 1 | 2 | 3;
@@ -14,13 +15,14 @@ interface TranslationTask {
   itemId: number;
   field: TranslationField;
   priority: TaskPriority;
-  manual: boolean;
 }
 
 export class TranslationService {
   private queue: TranslationTask[] = [];
   private processing = false;
+  private processingPromise: Promise<void> | null = null;
   private stopped = false;
+  private generation = 0;
   private lastRequestAt = 0;
   private listeners = new Set<() => void>();
 
@@ -28,21 +30,39 @@ export class TranslationService {
     private readonly repository: RssRepository,
     private readonly provider: TranslationProvider,
     private readonly getSettings: () => RssReaderSettings,
+    private readonly timerWindow: Pick<Window, "setTimeout">,
+    private readonly operationCoordinator?: DatabaseOperationCoordinator,
+    private readonly onError: (error: unknown) => void = () => undefined,
   ) {}
 
   async initialize(): Promise<void> {
+    this.queue = [];
+    this.stopped = false;
+    this.generation += 1;
     for (const record of this.repository.listTranslationsByStatus(["pending"])) {
       this.enqueue({
         itemId: record.itemId,
         field: record.field,
         priority: record.field === "title" ? 2 : 3,
-        manual: false,
       });
     }
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     this.stopped = true;
+    this.generation += 1;
+    this.queue = [];
+    await this.processingPromise?.catch(() => undefined);
+  }
+
+  isBusy(): boolean {
+    return this.processing;
+  }
+
+  resume(): void {
+    if (!this.stopped) {
+      this.startProcessing();
+    }
   }
 
   onChange(listener: () => void): () => void {
@@ -50,39 +70,20 @@ export class TranslationService {
     return () => this.listeners.delete(listener);
   }
 
-  enqueueNewItems(itemIds: number[]): void {
-    const settings = this.getSettings();
-    for (const itemId of itemIds) {
-      if (settings.autoTranslateTitles) {
-        void this.prepareAndEnqueue(itemId, "title", 2, false);
-      }
-      if (settings.abstractTranslationMode === "automatic") {
-        void this.prepareAndEnqueue(itemId, "abstract", 3, false);
-      }
-    }
-  }
-
-  requestOnOpen(itemId: number): void {
-    if (this.getSettings().abstractTranslationMode === "on-open") {
-      void this.prepareAndEnqueue(itemId, "abstract", 1, false);
-    }
-  }
-
   requestManual(
     itemId: number,
     field: TranslationField,
     force = false,
-  ): void {
-    void this.prepareAndEnqueue(itemId, field, 0, true, force);
+  ): Promise<void> {
+    return this.prepareAndEnqueue(itemId, field, 0, force);
   }
 
-  retryFailed(): void {
+  async retryFailed(): Promise<void> {
     for (const record of this.repository.listTranslationsByStatus(["failed"])) {
-      void this.prepareAndEnqueue(
+      await this.prepareAndEnqueue(
         record.itemId,
         record.field,
         0,
-        true,
         true,
       );
     }
@@ -92,9 +93,12 @@ export class TranslationService {
     itemId: number,
     field: TranslationField,
     priority: TaskPriority,
-    manual: boolean,
     force = false,
   ): Promise<void> {
+    const generation = this.generation;
+    if (this.stopped) {
+      return;
+    }
     const item = this.repository.getItem(
       itemId,
       this.getSettings().targetLanguage,
@@ -134,8 +138,14 @@ export class TranslationService {
       lastError: null,
       translatedAt: force ? null : (existing?.translatedAt ?? null),
     };
+    if (this.stopped || generation !== this.generation) {
+      return;
+    }
     await this.repository.upsertTranslationTask(targetRecord);
-    this.enqueue({ itemId, field, priority, manual });
+    if (this.stopped || generation !== this.generation) {
+      return;
+    }
+    this.enqueue({ itemId, field, priority });
   }
 
   private enqueue(task: TranslationTask): void {
@@ -145,39 +155,49 @@ export class TranslationService {
     );
     if (current) {
       current.priority = Math.min(current.priority, task.priority) as TaskPriority;
-      current.manual ||= task.manual;
     } else {
       this.queue.push(task);
     }
     this.queue.sort((left, right) => left.priority - right.priority);
-    void this.processQueue();
+    this.startProcessing();
+  }
+
+  private startProcessing(): void {
+    void this.processQueue().catch((error: unknown) => {
+      this.onError(error);
+    });
   }
 
   private async processQueue(): Promise<void> {
     if (this.processing || this.stopped) {
       return;
     }
+    const releaseOperation =
+      this.operationCoordinator?.tryAcquireOperation("translation");
+    if (this.operationCoordinator && !releaseOperation) {
+      return;
+    }
     this.processing = true;
-    try {
+    const processingPromise = (async () => {
       while (!this.stopped && this.queue.length > 0) {
-        const nextIndex = this.queue.findIndex(
-          (task) =>
-            task.manual || !this.getSettings().pauseAutomaticTranslation,
-        );
-        if (nextIndex < 0) {
-          break;
-        }
-        const [task] = this.queue.splice(nextIndex, 1);
+        const [task] = this.queue.splice(0, 1);
         if (task) {
           await this.runTask(task);
         }
       }
+    })();
+    this.processingPromise = processingPromise;
+    try {
+      await processingPromise;
     } finally {
       this.processing = false;
+      this.processingPromise = null;
+      releaseOperation?.();
     }
   }
 
   private async runTask(task: TranslationTask): Promise<void> {
+    const generation = this.generation;
     const settings = this.getSettings();
     const record = this.repository.getTranslation(
       task.itemId,
@@ -204,16 +224,25 @@ export class TranslationService {
       ...record,
       status: "translating",
     };
+    if (this.stopped || generation !== this.generation) {
+      return;
+    }
     await this.repository.updateTranslation(current);
     this.emitChange();
     for (let attempt = current.attemptCount + 1; attempt <= 3; attempt += 1) {
       try {
         await this.enforceInterval();
+        if (this.stopped || generation !== this.generation) {
+          return;
+        }
         const result = await this.provider.translate(
           current.sourceText,
           "auto",
           current.targetLanguage,
         );
+        if (this.stopped || generation !== this.generation) {
+          return;
+        }
         current = {
           ...current,
           translatedText: result.translatedText,
@@ -227,6 +256,9 @@ export class TranslationService {
         this.emitChange();
         return;
       } catch (error) {
+        if (this.stopped || generation !== this.generation) {
+          return;
+        }
         current = {
           ...current,
           status: attempt >= 3 ? "failed" : "translating",
@@ -235,7 +267,10 @@ export class TranslationService {
         };
         await this.repository.updateTranslation(current);
         if (attempt < 3) {
-          await delay(1_000 * attempt);
+          await delay(1_000 * attempt, this.timerWindow);
+          if (this.stopped || generation !== this.generation) {
+            return;
+          }
         }
       }
     }
@@ -245,7 +280,7 @@ export class TranslationService {
   private async enforceInterval(): Promise<void> {
     const remaining = 1_000 - (Date.now() - this.lastRequestAt);
     if (remaining > 0) {
-      await delay(remaining);
+      await delay(remaining, this.timerWindow);
     }
     this.lastRequestAt = Date.now();
   }
@@ -278,6 +313,11 @@ export function isTargetLanguage(text: string, target: string): boolean {
   return kanaOrHangul === 0 && hanCount > 0 && hanCount >= latinCount * 2;
 }
 
-function delay(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+function delay(
+  milliseconds: number,
+  timerWindow: Pick<Window, "setTimeout">,
+): Promise<void> {
+  return new Promise((resolve) =>
+    timerWindow.setTimeout(resolve, milliseconds),
+  );
 }

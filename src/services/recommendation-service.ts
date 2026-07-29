@@ -6,6 +6,7 @@ import type {
   RssItem,
 } from "../models/domain";
 import { RssRepository } from "../repositories/rss-repository";
+import type { DatabaseOperationCoordinator } from "./database-operation-coordinator";
 
 const POSITIVE = new Set(["interested", "archived"]);
 const STOPWORDS = new Set(
@@ -29,6 +30,8 @@ export interface RecommendationRun {
   unscoredCount: number;
 }
 
+export type RecommendationProgress = (message: string) => void;
+
 interface FeatureData {
   vocabulary: string[];
   idf: number[];
@@ -38,9 +41,30 @@ interface FeatureData {
 }
 
 export class RecommendationService {
-  constructor(private readonly repository: RssRepository) {}
+  constructor(
+    private readonly repository: RssRepository,
+    private readonly operationCoordinator?: DatabaseOperationCoordinator,
+    private readonly yieldToMainThread: () => Promise<void> = async () =>
+      undefined,
+  ) {}
 
-  async rebuild(): Promise<RecommendationRun> {
+  async rebuild(
+    onProgress?: RecommendationProgress,
+  ): Promise<RecommendationRun> {
+    const releaseOperation =
+      this.operationCoordinator?.acquireOperation("recommendation");
+    try {
+      return await this.rebuildInternal(onProgress);
+    } finally {
+      releaseOperation?.();
+    }
+  }
+
+  private async rebuildInternal(
+    onProgress?: RecommendationProgress,
+  ): Promise<RecommendationRun> {
+    onProgress?.("正在读取推荐训练样本……");
+    await this.yieldToMainThread();
     const training = this.repository.listTrainingItems();
     const unread = this.repository.listUnreadItems();
     const positiveCount = training.filter((item) =>
@@ -76,7 +100,13 @@ export class RecommendationService {
     const labels = training.map((item) =>
       POSITIVE.has(item.itemStatus) ? 1 : 0,
     );
-    const features = buildFeatures(documents, labels, overrides);
+    onProgress?.("正在提取关键词特征……");
+    const features = await buildFeatures(
+      documents,
+      labels,
+      overrides,
+      this.yieldToMainThread,
+    );
     if (features.vocabulary.length === 0) {
       const error = "关键词模型无法训练：没有足够的重复词汇";
       await this.repository.replaceRecommendationResults({
@@ -91,11 +121,13 @@ export class RecommendationService {
       throw new Error(error);
     }
 
-    const weights = trainLogistic(
+    onProgress?.("正在训练关键词模型……");
+    const weights = await trainLogistic(
       features.vectors,
       labels,
       positiveCount,
       negativeCount,
+      this.yieldToMainThread,
     );
     for (const [index, keyword] of features.vocabulary.entries()) {
       if (overrides.get(keyword)?.isDisabled) {
@@ -103,12 +135,26 @@ export class RecommendationService {
       }
     }
 
-    const scores = unread
-      .map((item) =>
-        scoreItem(item, features.vocabulary, features.idf, weights, overrides),
-      )
-      .filter((score): score is NonNullable<typeof score> => score !== null);
+    onProgress?.("正在为未读文献评分……");
+    const scores: NonNullable<ReturnType<typeof scoreItem>>[] = [];
+    for (const [index, item] of unread.entries()) {
+      const score = scoreItem(
+        item,
+        features.vocabulary,
+        features.idf,
+        weights,
+        overrides,
+      );
+      if (score) {
+        scores.push(score);
+      }
+      if ((index + 1) % 25 === 0) {
+        await this.yieldToMainThread();
+      }
+    }
 
+    onProgress?.("正在保存推荐结果……");
+    await this.yieldToMainThread();
     await this.repository.replaceRecommendationResults({
       modelVersion,
       positiveCount,
@@ -187,16 +233,26 @@ function documentTerms(document: string): string[] {
   return ngrams;
 }
 
-function buildFeatures(
+async function buildFeatures(
   documents: string[],
   labels: number[],
   overrides: Map<string, KeywordRecord>,
-): FeatureData {
-  const documentTokens = documents.map(documentTerms);
+  yieldToMainThread: () => Promise<void>,
+): Promise<FeatureData> {
+  const documentTokens: string[][] = [];
+  for (const [index, document] of documents.entries()) {
+    documentTokens.push(documentTerms(document));
+    if ((index + 1) % 25 === 0) {
+      await yieldToMainThread();
+    }
+  }
   const frequencies = new Map<string, number>();
-  for (const tokens of documentTokens) {
+  for (const [index, tokens] of documentTokens.entries()) {
     for (const token of new Set(tokens)) {
       frequencies.set(token, (frequencies.get(token) ?? 0) + 1);
+    }
+    if ((index + 1) % 50 === 0) {
+      await yieldToMainThread();
     }
   }
   const vocabulary = [...frequencies.entries()]
@@ -219,7 +275,8 @@ function buildFeatures(
   );
   const positivePresence = new Array<number>(vocabulary.length).fill(0);
   const negativePresence = new Array<number>(vocabulary.length).fill(0);
-  const vectors = documentTokens.map((tokens, rowIndex) => {
+  const vectors: number[][] = [];
+  for (const [rowIndex, tokens] of documentTokens.entries()) {
     const counts = new Map<string, number>();
     for (const token of tokens) {
       if (indexByToken.has(token)) {
@@ -243,22 +300,30 @@ function buildFeatures(
       }
     }
     const norm = Math.sqrt(squaredNorm);
-    return norm > 0 ? vector.map((value) => value / norm) : vector;
-  });
+    vectors.push(
+      norm > 0 ? vector.map((value) => value / norm) : vector,
+    );
+    if ((rowIndex + 1) % 10 === 0) {
+      await yieldToMainThread();
+    }
+  }
   return { vocabulary, idf, vectors, positivePresence, negativePresence };
 }
 
-function trainLogistic(
+async function trainLogistic(
   vectors: number[][],
   labels: number[],
   positiveCount: number,
   negativeCount: number,
-): number[] {
+  yieldToMainThread: () => Promise<void>,
+): Promise<number[]> {
   const weights = new Array<number>(vectors[0]?.length ?? 0).fill(0);
   const learningRate = 0.4;
   const total = labels.length;
   const positiveWeight = total / (2 * positiveCount);
   const negativeWeight = total / (2 * negativeCount);
+  const yieldEvery =
+    vectors.length * weights.length > 250_000 ? 1 : 5;
   for (let iteration = 0; iteration < 350; iteration += 1) {
     const gradient = new Array<number>(weights.length).fill(0);
     for (const [row, vector] of vectors.entries()) {
@@ -275,6 +340,9 @@ function trainLogistic(
       const regularized =
         (gradient[column] ?? 0) / total + 0.01 * (weights[column] ?? 0);
       weights[column] = (weights[column] ?? 0) - learningRate * regularized;
+    }
+    if ((iteration + 1) % yieldEvery === 0) {
+      await yieldToMainThread();
     }
   }
   return weights;

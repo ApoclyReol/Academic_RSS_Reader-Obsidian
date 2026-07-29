@@ -27,4 +27,18 @@ export default defineConfig(
     },
   },
   ...obsidianmd.configs.recommended,
+  {
+    files: ["src/settings/rss-reader-setting-tab.ts"],
+    rules: {
+      // Keep PluginSettingTab.display() while minAppVersion supports Obsidian <1.13.
+      "@typescript-eslint/no-deprecated": "off",
+      "obsidianmd/settings-tab/prefer-setting-definitions": "off",
+    },
+  },
+  {
+    files: ["tests/dom-ui.test.ts"],
+    rules: {
+      "obsidianmd/prefer-create-el": "off",
+    },
+  },
 );

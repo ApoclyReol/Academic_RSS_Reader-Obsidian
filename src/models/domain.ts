@@ -76,6 +76,7 @@ export interface ItemQuery {
   query?: string;
   feedIds?: number[];
   limit?: number;
+  offset?: number;
   targetLanguage?: string;
 }
 
