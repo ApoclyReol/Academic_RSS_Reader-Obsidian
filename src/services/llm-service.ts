@@ -14,6 +14,7 @@ export class LlmService {
   constructor(
     private readonly repository: RssRepository,
     private readonly getSettings: () => RssReaderSettings,
+    private readonly getApiKey: () => string,
   ) {}
 
   async testConnection(): Promise<string> {
@@ -61,7 +62,7 @@ export class LlmService {
 
   private validatedSettings(): RssReaderSettings {
     const settings = this.getSettings();
-    if (!settings.llmBaseUrl || !settings.llmApiKey || !settings.llmModel) {
+    if (!settings.llmBaseUrl || !this.getApiKey() || !settings.llmModel) {
       throw new Error("请先配置 LLM 地址、API Key 和模型");
     }
     return settings;
@@ -79,7 +80,7 @@ export class LlmService {
       url,
       method: "POST",
       headers: {
-        Authorization: `Bearer ${settings.llmApiKey}`,
+        Authorization: `Bearer ${this.getApiKey()}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({

@@ -14,7 +14,7 @@ const manifest = JSON.parse(
   await readFile(join(projectRoot, "manifest.json"), "utf8"),
 );
 
-if (manifest.id !== "rss-reader") {
+if (manifest.id !== "academic-rss-reader") {
   throw new Error(`Unexpected plugin id: ${String(manifest.id)}`);
 }
 if (!/^\d+\.\d+\.\d+$/.test(manifest.version)) {
@@ -24,7 +24,7 @@ if (!/^\d+\.\d+\.\d+$/.test(manifest.version)) {
 const buildRoot = join(projectRoot, "build");
 const obsidianRoot = join(buildRoot, "obsidian");
 const pluginDirectory = join(obsidianRoot, manifest.id);
-const zipName = `RSS-Reader-${manifest.version}.zip`;
+const zipName = `Academic-RSS-Reader-${manifest.version}.zip`;
 const zipPath = join(buildRoot, zipName);
 const requiredFiles = [
   "main.js",

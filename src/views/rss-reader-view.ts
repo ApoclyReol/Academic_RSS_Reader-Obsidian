@@ -56,7 +56,7 @@ export class RssReaderView extends ItemView {
   }
 
   getDisplayText(): string {
-    return "RSS reader";
+    return "Academic RSS Reader";
   }
 
   getIcon(): string {
@@ -139,7 +139,7 @@ export class RssReaderView extends ItemView {
     const header = container.createDiv({ cls: "rss-reader__header" });
     const title = header.createDiv({ cls: "rss-reader__brand" });
     setIcon(title.createSpan(), "rss");
-    title.createEl("h2", { text: "RSS Reader" });
+    title.createEl("h2", { text: "Academic RSS Reader" });
 
     const navigation = header.createDiv({ cls: "rss-reader__navigation" });
     for (const [page, label, icon] of [
@@ -166,15 +166,15 @@ export class RssReaderView extends ItemView {
     setup.createEl("h2", { text: "需要配置数据目录" });
     const message =
       this.plugin.databaseState === "initializing"
-        ? "正在载入 RSS Reader 数据库……"
+        ? "正在载入 Academic RSS Reader 数据库……"
         : this.plugin.databaseError
           ? `数据库未载入：${this.plugin.databaseError}`
-          : "RSS Reader 不会在插件目录创建数据库。请先到设置中选择当前 Vault 内的数据目录，然后创建或载入数据库。";
+          : "Academic RSS Reader 不会在插件目录创建数据库。请先到设置中选择当前 Vault 内的数据目录，然后创建或载入数据库。";
     setup.createEl("p", { text: message });
     if (this.plugin.databaseState !== "initializing") {
       const button = setup.createEl("button", {
         cls: "mod-cta",
-        text: "打开 RSS Reader 设置",
+        text: "打开 Academic RSS Reader 设置",
       });
       button.addEventListener("click", () => this.plugin.openSettings());
     }
@@ -229,6 +229,20 @@ export class RssReaderView extends ItemView {
       this.translationEnabled ? "显示原文" : "翻译标题",
       "languages",
       async () => {
+        if (
+          !this.translationEnabled &&
+          !this.plugin.settings.googleTranslationDisclosureAccepted &&
+          !(await confirmGoogleTranslation(this.app))
+        ) {
+          return;
+        }
+        if (
+          !this.translationEnabled &&
+          !this.plugin.settings.googleTranslationDisclosureAccepted
+        ) {
+          this.plugin.settings.googleTranslationDisclosureAccepted = true;
+          await this.plugin.saveSettings();
+        }
         this.translationEnabled = !this.translationEnabled;
         if (!this.translationEnabled) {
           this.requestedTitleIds.clear();
@@ -661,6 +675,58 @@ export class RssReaderView extends ItemView {
     button.disabled = disabled;
     button.addEventListener("click", () => void action());
     return button;
+  }
+}
+
+function confirmGoogleTranslation(app: RssReaderPlugin["app"]): Promise<boolean> {
+  return new Promise((resolve) => {
+    const modal = new GoogleTranslationConsentModal(app, resolve);
+    modal.open();
+  });
+}
+
+class GoogleTranslationConsentModal extends Modal {
+  private resolved = false;
+
+  constructor(
+    app: RssReaderPlugin["app"],
+    private readonly resolveChoice: (accepted: boolean) => void,
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    this.setTitle("启用实验性标题翻译？");
+    this.contentEl.createEl("p", {
+      text: "启用后，当前视口中的文献标题及后续预取标题会直接发送给 Google 非正式网页翻译接口。请求不经过开发者服务器；该接口可能限流、失效，译文不应用于正式引用。",
+    });
+    new Setting(this.contentEl)
+      .addButton((button) =>
+        button.setButtonText("取消").onClick(() => this.finish(false)),
+      )
+      .addButton((button) =>
+        button
+          .setButtonText("同意并启用")
+          .setCta()
+          .onClick(() => this.finish(true)),
+      );
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+    if (!this.resolved) {
+      this.resolved = true;
+      this.resolveChoice(false);
+    }
+  }
+
+  private finish(accepted: boolean): void {
+    if (this.resolved) {
+      return;
+    }
+    this.resolved = true;
+    this.resolveChoice(accepted);
+    this.close();
   }
 }
 

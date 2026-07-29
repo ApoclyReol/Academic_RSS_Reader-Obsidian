@@ -1,4 +1,10 @@
-import { App, Notice, PluginSettingTab, Setting } from "obsidian";
+import {
+  App,
+  Notice,
+  PluginSettingTab,
+  SecretComponent,
+  Setting,
+} from "obsidian";
 
 import type RssReaderPlugin from "../main";
 import { DirectorySuggest } from "./directory-suggest";
@@ -14,6 +20,7 @@ export class RssReaderSettingTab extends PluginSettingTab {
     this.directorySuggest?.close();
     const { containerEl } = this;
     containerEl.empty();
+    containerEl.addClass("academic-rss-reader-settings");
 
     new Setting(containerEl).setName("数据库存储").setHeading();
     containerEl.createEl("p", {
@@ -26,7 +33,7 @@ export class RssReaderSettingTab extends PluginSettingTab {
       text: this.databaseStatusText(),
     });
     const databaseSetting = new Setting(containerEl)
-      .setName("RSS Reader 数据目录")
+      .setName("Academic RSS Reader 数据目录")
       .setDesc("输入相对于 Vault 根目录的路径；输入本身不会创建或载入数据库。")
       .addText((text) => {
         text
@@ -133,7 +140,7 @@ export class RssReaderSettingTab extends PluginSettingTab {
     new Setting(containerEl).setName("订阅更新").setHeading();
     new Setting(containerEl)
       .setName("打开阅读器时自动更新")
-      .setDesc("每次启动 Obsidian 后，首次打开 RSS Reader 时在后台静默更新全部启用订阅。")
+      .setDesc("每次启动 Obsidian 后，首次打开 Academic RSS Reader 时在后台静默更新全部启用订阅。")
       .addToggle((toggle) =>
         toggle
           .setValue(this.plugin.settings.autoUpdateOnStartup)
@@ -189,15 +196,15 @@ export class RssReaderSettingTab extends PluginSettingTab {
       );
     new Setting(containerEl)
       .setName("API Key")
-      .addText((text) => {
-        text.inputEl.type = "password";
-        text
-          .setValue(this.plugin.settings.llmApiKey)
+      .setDesc("选择或创建 Obsidian SecretStorage 条目；data.json 只保存条目名称。")
+      .addComponent((container) =>
+        new SecretComponent(this.app, container)
+          .setValue(this.plugin.settings.llmSecretId)
           .onChange(async (value) => {
-            this.plugin.settings.llmApiKey = value.trim();
+            this.plugin.settings.llmSecretId = value;
             await this.plugin.saveSettings();
-          });
-      });
+          }),
+      );
     new Setting(containerEl)
       .setName("模型")
       .addText((text) =>
@@ -250,7 +257,7 @@ export class RssReaderSettingTab extends PluginSettingTab {
       return `数据库载入失败：${this.plugin.databaseError ?? "未知错误"}`;
     }
     return this.plugin.settings.dataDirectory
-      ? "已保存数据目录；打开 RSS Reader 时会尝试载入其中的数据库。"
+      ? "已保存数据目录；打开 Academic RSS Reader 时会尝试载入其中的数据库。"
       : "尚未配置数据目录。";
   }
 

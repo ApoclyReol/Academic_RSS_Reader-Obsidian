@@ -103,7 +103,7 @@ v1.0.0 增加：
 发布 ZIP 中只能有：
 
 ```text
-rss-reader/
+academic-rss-reader/
 ├── main.js
 ├── manifest.json
 └── styles.css
