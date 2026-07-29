@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.2 — 2026-07-29
+
+- 插件 ID 和名称改为 `academic-rss-reader` 与 Academic RSS Reader。
+- LLM API Key 改用 Obsidian SecretStorage，并自动迁移旧 `data.json` 明文字段。
+- 用户首次启用实验性标题翻译时，明确提示标题将发送给 Google。
+- 用户输入的数据目录先经 Obsidian `normalizePath()` 规范化，再执行 Vault containment 检查。
+- 阅读器与设置页按钮增加更明显的 hover 高亮、边框、阴影和位移反馈，并使用手型指针。
+- 发布目录和 ZIP 改为 `academic-rss-reader/` 与 `Academic-RSS-Reader-1.0.2.zip`。
+- 最低 Obsidian 版本提升到 1.11.4；项目继续使用 MIT License。
+
 ## 1.0.1 — 2026-07-28
 
 - 自动更新改为每次启动后首次打开 RSS Reader 时静默执行，不再在 Obsidian 启动时弹出更新提示。

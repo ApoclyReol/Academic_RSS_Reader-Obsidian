@@ -9,12 +9,13 @@ export interface RssReaderSettings {
   autoUpdateOnStartup: boolean;
   hiddenExpireDays: number;
   targetLanguage: string;
+  googleTranslationDisclosureAccepted: boolean;
   autoTranslateTitles: boolean;
   abstractTranslationMode: AbstractTranslationMode;
   translationDisplayMode: TranslationDisplayMode;
   pauseAutomaticTranslation: boolean;
   llmBaseUrl: string;
-  llmApiKey: string;
+  llmSecretId: string;
   llmModel: string;
   userInterest: string;
 }
@@ -24,12 +25,13 @@ export const DEFAULT_SETTINGS: RssReaderSettings = {
   autoUpdateOnStartup: true,
   hiddenExpireDays: 30,
   targetLanguage: "zh-CN",
+  googleTranslationDisclosureAccepted: false,
   autoTranslateTitles: false,
   abstractTranslationMode: "manual",
   translationDisplayMode: "translated-first",
   pauseAutomaticTranslation: true,
   llmBaseUrl: "",
-  llmApiKey: "",
+  llmSecretId: "",
   llmModel: "",
   userInterest: "",
 };

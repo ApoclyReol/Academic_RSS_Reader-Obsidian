@@ -4,7 +4,12 @@ import {
 } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 
-import { FileSystemAdapter, Notice, Plugin } from "obsidian";
+import {
+  FileSystemAdapter,
+  normalizePath,
+  Notice,
+  Plugin,
+} from "obsidian";
 
 import { RSS_READER_VIEW_TYPE } from "./constants";
 import {
@@ -50,6 +55,8 @@ export default class RssReaderPlugin extends Plugin {
   private context: ServiceContext | null = null;
   private automaticUpdateStarted = false;
   private vaultRoot = "";
+  private static readonly LLM_SECRET_ID =
+    "academic-rss-reader-llm-api-key";
 
   get database(): RssDatabase {
     return this.requireContext().database;
@@ -79,7 +86,7 @@ export default class RssReaderPlugin extends Plugin {
     await this.loadSettings();
     const adapter = this.app.vault.adapter;
     if (!(adapter instanceof FileSystemAdapter)) {
-      throw new Error("RSS Reader 仅支持 Obsidian 桌面端文件系统");
+      throw new Error("Academic RSS Reader 仅支持 Obsidian 桌面端文件系统");
     }
     this.vaultRoot = adapter.getBasePath();
 
@@ -87,7 +94,7 @@ export default class RssReaderPlugin extends Plugin {
       RSS_READER_VIEW_TYPE,
       (leaf) => new RssReaderView(leaf, this),
     );
-    this.addRibbonIcon("rss", "打开 RSS reader", () => {
+    this.addRibbonIcon("rss", "打开 Academic RSS Reader", () => {
       void this.activateView();
     });
     this.addCommand({
@@ -106,23 +113,46 @@ export default class RssReaderPlugin extends Plugin {
 
   async loadSettings(): Promise<void> {
     const stored: unknown = await this.loadData();
+    const storedSettings = isPartialSettings(stored) ? stored : {};
+    const legacyStoredSettings = storedSettings as
+      Partial<RssReaderSettings> & { llmApiKey?: unknown };
+    const legacyApiKey =
+      typeof legacyStoredSettings.llmApiKey === "string"
+        ? legacyStoredSettings.llmApiKey.trim()
+        : "";
     this.settings = {
       ...DEFAULT_SETTINGS,
-      ...(isPartialSettings(stored) ? stored : {}),
+      ...storedSettings,
     };
     const legacySettings = this.settings as RssReaderSettings & {
       backupDirectory?: string;
       databaseDirectory?: string;
+      llmApiKey?: string;
     };
     delete legacySettings.backupDirectory;
     delete legacySettings.databaseDirectory;
+    delete legacySettings.llmApiKey;
     this.settings.dataDirectory =
       typeof this.settings.dataDirectory === "string"
         ? this.settings.dataDirectory
         : "";
+    this.settings.llmSecretId =
+      typeof this.settings.llmSecretId === "string"
+        ? this.settings.llmSecretId
+        : "";
     this.settings.autoTranslateTitles = false;
     this.settings.abstractTranslationMode = "manual";
     this.settings.pauseAutomaticTranslation = true;
+    if (legacyApiKey) {
+      const secretId = this.findAvailableLegacySecretId(legacyApiKey);
+      this.app.secretStorage.setSecret(secretId, legacyApiKey);
+      this.settings.llmSecretId = secretId;
+      await this.saveData(this.settings);
+      new Notice(
+        "Academic RSS Reader 已将旧 LLM API Key 迁移到 Obsidian SecretStorage，并从 data.json 删除明文。",
+        10_000,
+      );
+    }
   }
 
   async saveSettings(): Promise<void> {
@@ -339,7 +369,7 @@ export default class RssReaderPlugin extends Plugin {
     try {
       await this.feedService.updateFeeds();
     } catch (error) {
-      console.error("RSS Reader automatic update failed", error);
+      console.error("Academic RSS Reader automatic update failed", error);
     }
   }
 
@@ -407,7 +437,11 @@ export default class RssReaderPlugin extends Plugin {
         feedService,
         translationService,
         recommendationService: new RecommendationService(repository),
-        llmService: new LlmService(repository, () => this.settings),
+        llmService: new LlmService(
+          repository,
+          () => this.settings,
+          () => this.getLlmApiKey(),
+        ),
         unsubscribeTranslation: () => undefined,
       };
       context.unsubscribeTranslation = translationService.onChange(() => {
@@ -455,14 +489,14 @@ export default class RssReaderPlugin extends Plugin {
 
   private requireContext(): ServiceContext {
     if (!this.context || this.databaseState !== "ready") {
-      throw new Error("请先在 RSS Reader 设置中选择并载入数据目录");
+      throw new Error("请先在 Academic RSS Reader 设置中选择并载入数据目录");
     }
     return this.context;
   }
 
   private async runUpdateWithNotice(trigger: string): Promise<void> {
     if (!this.isDatabaseReady()) {
-      new Notice("请先在 RSS Reader 设置中选择并载入数据目录");
+      new Notice("请先在 Academic RSS Reader 设置中选择并载入数据目录");
       return;
     }
     if (this.feedService.isUpdating()) {
@@ -513,6 +547,28 @@ export default class RssReaderPlugin extends Plugin {
     }
     return destination;
   }
+
+  getLlmApiKey(): string {
+    return this.settings.llmSecretId
+      ? (this.app.secretStorage.getSecret(this.settings.llmSecretId) ?? "")
+      : "";
+  }
+
+  private findAvailableLegacySecretId(legacyApiKey: string): string {
+    const base = RssReaderPlugin.LLM_SECRET_ID;
+    const existing = this.app.secretStorage.getSecret(base);
+    if (!existing || existing === legacyApiKey) {
+      return base;
+    }
+    for (let suffix = 2; ; suffix += 1) {
+      const candidate = `${base}-${suffix}`;
+      const candidateValue =
+        this.app.secretStorage.getSecret(candidate);
+      if (!candidateValue || candidateValue === legacyApiKey) {
+        return candidate;
+      }
+    }
+  }
 }
 
 function isPartialSettings(
@@ -522,7 +578,10 @@ function isPartialSettings(
 }
 
 function normalizeDirectory(directory: string): string {
-  return directory.trim().replace(/^\/+|\/+$/g, "");
+  const trimmed = directory.trim();
+  return trimmed
+    ? normalizePath(trimmed).replace(/^\/+|\/+$/g, "")
+    : "";
 }
 
 function fileTimestamp(): string {
