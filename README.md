@@ -30,7 +30,7 @@ Academic RSS Reader v1.0.3 是面向学术文献初筛的 Obsidian 桌面插件�
 
 ## 安装
 
-插件仅支持 Obsidian 桌面端，最低版本为 1.11.4。
+插件仅支持 Obsidian 桌面端，最低版本为 1.11.4。v1.0.3 已在 Windows 和 macOS 桌面环境完成全部功能测试。
 
 将发布 ZIP 解压，使完整目录位于：
 
