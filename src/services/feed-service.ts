@@ -1,5 +1,6 @@
 import { requestUrl } from "obsidian";
 
+import { t } from "../i18n";
 import type {
   FeedInput,
   UpdateResult,
@@ -32,16 +33,16 @@ export class FeedService {
     const name = input.name.trim();
     const url = input.url.trim();
     if (!name) {
-      throw new Error("订阅名称不能为空");
+      throw new Error(t("订阅名称不能为空"));
     }
     let parsed: URL;
     try {
       parsed = new URL(url);
     } catch {
-      throw new Error("RSS URL 必须是有效的 http/https 链接");
+      throw new Error(t("RSS URL 必须是有效的 http/https 链接"));
     }
     if (!["http:", "https:"].includes(parsed.protocol)) {
-      throw new Error("RSS URL 必须是有效的 http/https 链接");
+      throw new Error(t("RSS URL 必须是有效的 http/https 链接"));
     }
     return { name, url, enabled: input.enabled };
   }
@@ -56,7 +57,7 @@ export class FeedService {
 
   async updateFeeds(feedIds?: number[]): Promise<UpdateResult[]> {
     if (this.updateInProgress) {
-      throw new Error("已有订阅更新正在进行");
+      throw new Error(t("已有订阅更新正在进行"));
     }
     const releaseOperation =
       this.operationCoordinator?.acquireOperation("feed-update");
@@ -165,7 +166,7 @@ export class FeedService {
   private async updateOne(feedId: number): Promise<UpdateResult> {
     const feed = this.repository.getFeed(feedId);
     if (!feed) {
-      return this.emptyResult(feedId, "", "订阅不存在");
+      return this.emptyResult(feedId, "", t("订阅不存在"));
     }
     try {
       const content = await this.fetchWithRetry(feed.url);
@@ -200,7 +201,7 @@ export class FeedService {
           headers: {
             Accept:
               "application/rss+xml, application/atom+xml, application/xml, text/xml, */*",
-            "User-Agent": "Academic-RSS-Reader/1.0.4",
+            "User-Agent": "Academic-RSS-Reader/1.1.0",
           },
           throw: false,
         });
@@ -217,7 +218,7 @@ export class FeedService {
     }
     throw lastError instanceof Error
       ? lastError
-      : new Error("订阅获取失败");
+      : new Error(t("订阅获取失败"));
   }
 
   private emptyResult(

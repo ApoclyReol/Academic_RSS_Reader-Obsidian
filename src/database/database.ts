@@ -6,6 +6,7 @@ import type {
 } from "sql.js";
 import initSqlJs from "sql.js/dist/sql-asm.js";
 
+import { t, tx } from "../i18n";
 import type { DatabaseOperationCoordinator } from "../services/database-operation-coordinator";
 import { CREATE_SCHEMA_SQL } from "./schema";
 
@@ -35,7 +36,7 @@ export class RssDatabase {
       this.database = new this.sql.Database(new Uint8Array(bytes));
     } else {
       if (options.createIfMissing === false) {
-        throw new Error("所选目录中没有 rss-reader.sqlite3");
+        throw new Error(t("所选目录中没有 rss-reader.sqlite3"));
       }
       this.database = new this.sql.Database();
     }
@@ -54,7 +55,7 @@ export class RssDatabase {
 
   get raw(): Database {
     if (!this.database) {
-      throw new Error("数据库尚未初始化");
+      throw new Error(t("数据库尚未初始化"));
     }
     return this.database;
   }
@@ -215,7 +216,7 @@ export async function inspectDatabaseFile(
     const integrity = database.exec("PRAGMA integrity_check");
     const result = integrity[0]?.values[0]?.[0];
     if (result !== "ok") {
-      throw new Error(`SQLite 完整性检查失败：${String(result ?? "未知错误")}`);
+      throw new Error(`SQLite 完整性检查失败：${String(result ?? t("未知错误"))}`);
     }
     const requiredTables = ["feeds", "items", "item_feeds"];
     const tables = new Set(
@@ -225,7 +226,12 @@ export async function inspectDatabaseFile(
     );
     const missing = requiredTables.filter((table) => !tables.has(table));
     if (missing.length > 0) {
-      throw new Error(`数据库缺少核心表：${missing.join("、")}`);
+      throw new Error(
+        tx(
+          `数据库缺少核心表：${missing.join("、")}`,
+          `The database is missing required tables: ${missing.join(", ")}`,
+        ),
+      );
     }
     return { exists: true, valid: true, error: null };
   } catch (error) {

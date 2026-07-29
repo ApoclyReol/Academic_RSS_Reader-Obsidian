@@ -1,6 +1,7 @@
 import type { BindParams, Database, SqlValue } from "sql.js";
 
 import { RssDatabase } from "../database/database";
+import { tx } from "../i18n";
 import { stableGuid } from "../services/rss-parser";
 import {
   ITEM_STATUSES,
@@ -1133,7 +1134,12 @@ export class RssRepository {
   private toItem(row: Row): RssItem {
     const status = String(row.item_status);
     if (!ITEM_STATUSES.includes(status as ItemStatus)) {
-      throw new Error(`未知条目状态：${status}`);
+      throw new Error(
+        tx(
+          `未知条目状态：${status}`,
+          `Unknown item status: ${status}`,
+        ),
+      );
     }
     return {
       id: Number(row.id),

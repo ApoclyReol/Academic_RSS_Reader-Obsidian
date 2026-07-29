@@ -1,4 +1,5 @@
 import {
+  getLanguage,
   normalizePath,
   Notice,
   Platform,
@@ -6,6 +7,7 @@ import {
 } from "obsidian";
 
 import { RSS_READER_VIEW_TYPE } from "./constants";
+import { setUiLanguage, t, tx } from "./i18n";
 import {
   RssDatabase,
   databasePaths,
@@ -80,29 +82,30 @@ export default class RssReaderPlugin extends Plugin {
   }
 
   async onload(): Promise<void> {
+    setUiLanguage(getLanguage());
     await this.loadSettings();
     if (!Platform.isDesktop) {
-      throw new Error("Academic RSS Reader 仅支持桌面端");
+      throw new Error(t("Academic RSS Reader 仅支持桌面端"));
     }
 
     this.registerView(
       RSS_READER_VIEW_TYPE,
       (leaf) => new RssReaderView(leaf, this),
     );
-    this.addRibbonIcon("rss", "打开 academic RSS reader", () => {
+    this.addRibbonIcon("rss", t("打开 academic RSS reader"), () => {
       this.runPluginAction(() => this.activateView());
     });
     this.addCommand({
       id: "open-reader",
-      name: "打开阅读器",
+      name: t("打开阅读器"),
       callback: () => this.runPluginAction(() => this.activateView()),
     });
     this.addCommand({
       id: "update-feeds",
-      name: "更新全部启用订阅",
+      name: t("更新全部启用订阅"),
       callback: () =>
         this.runPluginAction(() =>
-          this.runUpdateWithNotice("手动更新"),
+          this.runUpdateWithNotice(t("手动更新")),
         ),
     });
     this.addSettingTab(new RssReaderSettingTab(this.app, this));
@@ -146,7 +149,7 @@ export default class RssReaderPlugin extends Plugin {
       this.settings.llmSecretId = secretId;
       await this.saveData(this.settings);
       new Notice(
-        "Academic RSS Reader 已将旧 LLM API Key 迁移到 Obsidian SecretStorage，并从 data.json 删除明文。",
+        t("Academic RSS Reader 已将旧 LLM API Key 迁移到 Obsidian SecretStorage，并从 data.json 删除明文。"),
         10_000,
       );
     }
@@ -207,7 +210,7 @@ export default class RssReaderPlugin extends Plugin {
 
   async createDatabase(directory: string): Promise<void> {
     if (this.isDatabaseReady()) {
-      throw new Error("数据库已在运行；请使用“切换数据目录”");
+      throw new Error(t("数据库已在运行；请使用“切换数据目录”"));
     }
     const normalized = normalizeDirectory(directory);
     const paths = databasePaths(
@@ -218,7 +221,7 @@ export default class RssReaderPlugin extends Plugin {
       paths.databasePath,
     );
     if (inspection.exists) {
-      throw new Error("所选目录已存在 rss-reader.sqlite3，请使用载入");
+      throw new Error(t("所选目录已存在 rss-reader.sqlite3，请使用载入"));
     }
     await this.activateInitialDatabase(normalized, true);
   }
@@ -229,12 +232,12 @@ export default class RssReaderPlugin extends Plugin {
       if (normalized === this.settings.dataDirectory) {
         return;
       }
-      throw new Error("数据库已在运行；请使用“切换数据目录”");
+      throw new Error(t("数据库已在运行；请使用“切换数据目录”"));
     }
     const inspection = await this.inspectDataDirectory(normalized);
     if (!inspection.exists || !inspection.valid) {
       throw new Error(
-        inspection.error ?? "所选目录中没有 rss-reader.sqlite3",
+        inspection.error ?? t("所选目录中没有 rss-reader.sqlite3"),
       );
     }
     await this.activateInitialDatabase(normalized, false);
@@ -251,13 +254,13 @@ export default class RssReaderPlugin extends Plugin {
     try {
       const normalized = normalizeDirectory(directory);
       if (normalized === this.settings.dataDirectory) {
-        throw new Error("所选目录就是当前数据目录");
+        throw new Error(t("所选目录就是当前数据目录"));
       }
       const targetPaths = databasePaths(
         await this.resolveVaultDirectory(normalized),
       );
       if (targetPaths.databasePath === current.database.path) {
-        throw new Error("所选目录指向当前数据目录");
+        throw new Error(t("所选目录指向当前数据目录"));
       }
       const targetInspection = await inspectDatabaseFile(
         this.app.vault.adapter,
@@ -266,11 +269,11 @@ export default class RssReaderPlugin extends Plugin {
 
       if (mode === "migrate") {
         if (targetInspection.exists) {
-          throw new Error("目标目录已存在 rss-reader.sqlite3，迁移不会覆盖它");
+          throw new Error(t("目标目录已存在 rss-reader.sqlite3，迁移不会覆盖它"));
         }
       } else if (!targetInspection.exists || !targetInspection.valid) {
         throw new Error(
-          targetInspection.error ?? "目标目录中没有可载入的 rss-reader.sqlite3",
+          targetInspection.error ?? t("目标目录中没有可载入的 rss-reader.sqlite3"),
         );
       }
 
@@ -282,7 +285,7 @@ export default class RssReaderPlugin extends Plugin {
           targetPaths.databasePath,
         );
         if (!copied.valid) {
-          throw new Error(copied.error ?? "迁移后的数据库校验失败");
+          throw new Error(copied.error ?? t("迁移后的数据库校验失败"));
         }
       }
 
@@ -318,7 +321,7 @@ export default class RssReaderPlugin extends Plugin {
     try {
       const backupDirectory = this.getCurrentBackupDirectory();
       if (!backupDirectory) {
-        throw new Error("请先配置并载入数据库");
+        throw new Error(t("请先配置并载入数据库"));
       }
       const entries = await this.app.vault.adapter
         .list(backupDirectory)
@@ -354,7 +357,7 @@ export default class RssReaderPlugin extends Plugin {
         }
       }
       if (!source) {
-        throw new Error("当前数据目录的 backups 中没有有效数据库备份");
+        throw new Error(t("当前数据目录的 backups 中没有有效数据库备份"));
       }
       await this.createProtectionBackup("before-restore");
       await context.database.restoreFromFile(source);
@@ -404,7 +407,7 @@ export default class RssReaderPlugin extends Plugin {
     if (this.feedService.isUpdating()) {
       return;
     }
-    await this.runUpdateWithNotice("启动时自动更新");
+    await this.runUpdateWithNotice(t("启动时自动更新"));
   }
 
   private async initializeConfiguredDatabase(
@@ -461,7 +464,7 @@ export default class RssReaderPlugin extends Plugin {
     const timerWindow =
       this.app.workspace.containerEl.ownerDocument.defaultView;
     if (!timerWindow) {
-      throw new Error("无法获取 Obsidian 工作区窗口");
+      throw new Error(t("无法获取 Obsidian 工作区窗口"));
     }
     const database = new RssDatabase(
       this.app.vault.adapter,
@@ -473,7 +476,10 @@ export default class RssReaderPlugin extends Plugin {
       const identityRepair = await repository.repairLegacyItemIdentity();
       if (identityRepair.removedItems > 0) {
         new Notice(
-          `已修复 ${identityRepair.removedItems} 条重复文献，并保留原有状态与关联。`,
+          tx(
+            `已修复 ${identityRepair.removedItems} 条重复文献，并保留原有状态与关联。`,
+            `Repaired ${identityRepair.removedItems} duplicate papers while preserving their statuses and relationships.`,
+          ),
           8_000,
         );
       }
@@ -486,7 +492,10 @@ export default class RssReaderPlugin extends Plugin {
         this.operationCoordinator,
         (error) => {
           new Notice(
-            `翻译任务失败：${error instanceof Error ? error.message : String(error)}`,
+            tx(
+              `翻译任务失败：${error instanceof Error ? error.message : String(error)}`,
+              `Translation task failed: ${error instanceof Error ? error.message : String(error)}`,
+            ),
             10_000,
           );
         },
@@ -542,7 +551,7 @@ export default class RssReaderPlugin extends Plugin {
     const context = this.requireContext();
     const backupDirectory = this.getCurrentBackupDirectory();
     if (!backupDirectory) {
-      throw new Error("请先配置并载入数据库");
+      throw new Error(t("请先配置并载入数据库"));
     }
     const destination = normalizePath(
       `${backupDirectory}/${prefix}-${fileTimestamp()}.sqlite3`,
@@ -567,20 +576,23 @@ export default class RssReaderPlugin extends Plugin {
 
   private requireContext(): ServiceContext {
     if (!this.context || this.databaseState !== "ready") {
-      throw new Error("请先在 Academic RSS Reader 设置中选择并载入数据目录");
+      throw new Error(t("请先在 Academic RSS Reader 设置中选择并载入数据目录"));
     }
     return this.context;
   }
 
   private async runUpdateWithNotice(trigger: string): Promise<void> {
     if (!this.isDatabaseReady()) {
-      new Notice("请先在 academic RSS reader 设置中选择并载入数据目录");
+      new Notice(t("请先在 academic RSS reader 设置中选择并载入数据目录"));
       return;
     }
     if (this.feedService.isUpdating()) {
       return;
     }
-    const notice = new Notice(`${trigger}正在进行……`, 0);
+    const notice = new Notice(
+      tx(`${trigger}正在进行……`, `${trigger} in progress…`),
+      0,
+    );
     try {
       const results = await this.feedService.updateFeeds();
       const newItems = results.reduce(
@@ -589,11 +601,17 @@ export default class RssReaderPlugin extends Plugin {
       );
       const failed = results.filter((result) => result.error).length;
       notice.setMessage(
-        `${trigger}完成：新增 ${newItems} 条，失败订阅 ${failed} 个`,
+        tx(
+          `${trigger}完成：新增 ${newItems} 条，失败订阅 ${failed} 个`,
+          `${trigger} completed: ${newItems} new items, ${failed} failed feeds.`,
+        ),
       );
     } catch (error) {
       notice.setMessage(
-        `${trigger}失败：${error instanceof Error ? error.message : String(error)}`,
+        tx(
+          `${trigger}失败：${error instanceof Error ? error.message : String(error)}`,
+          `${trigger} failed: ${error instanceof Error ? error.message : String(error)}`,
+        ),
       );
     } finally {
       this.app.workspace.containerEl.ownerDocument.defaultView?.setTimeout(

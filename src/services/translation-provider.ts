@@ -1,5 +1,7 @@
 import { requestUrl } from "obsidian";
 
+import { t, tx } from "../i18n";
+
 export interface TranslationResult {
   translatedText: string;
   detectedSourceLanguage: string;
@@ -35,11 +37,16 @@ export class GoogleWebTranslationProvider implements TranslationProvider {
       throw: false,
     });
     if (response.status < 200 || response.status >= 300) {
-      throw new Error(`翻译服务返回 HTTP ${response.status}`);
+      throw new Error(
+        tx(
+          `翻译服务返回 HTTP ${response.status}`,
+          `Translation service returned HTTP ${response.status}.`,
+        ),
+      );
     }
     const payload: unknown = response.json;
     if (!Array.isArray(payload) || !Array.isArray(payload[0])) {
-      throw new Error("翻译服务返回了无法识别的数据");
+      throw new Error(t("翻译服务返回了无法识别的数据"));
     }
     const fragments = payload[0] as unknown[];
     const translatedText = fragments
@@ -51,7 +58,7 @@ export class GoogleWebTranslationProvider implements TranslationProvider {
       .join("")
       .trim();
     if (!translatedText) {
-      throw new Error("翻译结果为空");
+      throw new Error(t("翻译结果为空"));
     }
     return {
       translatedText,

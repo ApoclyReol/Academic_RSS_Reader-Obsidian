@@ -1,19 +1,21 @@
 import type { DataAdapter } from "obsidian";
 
+import { t } from "../i18n";
+
 export function resolveVaultDirectoryPath(
   directory: string,
 ): string {
   const value = directory.trim();
   if (!value || isAbsolutePath(value)) {
-    throw new Error("请选择当前 Vault 内的相对目录");
+    throw new Error(t("请选择当前 Vault 内的相对目录"));
   }
   const segments = value.replaceAll("\\", "/").split("/");
   if (segments.some((segment) => segment === "..")) {
-    throw new Error("数据目录必须位于当前 Vault 内");
+    throw new Error(t("数据目录必须位于当前 Vault 内"));
   }
   const normalized = normalizeVaultPath(value);
   if (!normalized || normalized === "." || normalized.startsWith("../")) {
-    throw new Error("数据目录必须位于当前 Vault 内");
+    throw new Error(t("数据目录必须位于当前 Vault 内"));
   }
   return normalized;
 }

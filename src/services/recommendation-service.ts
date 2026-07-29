@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 
+import { t } from "../i18n";
 import type {
   KeywordRecord,
   RecommendationTier,
@@ -63,7 +64,7 @@ export class RecommendationService {
   private async rebuildInternal(
     onProgress?: RecommendationProgress,
   ): Promise<RecommendationRun> {
-    onProgress?.("正在读取推荐训练样本……");
+    onProgress?.(t("正在读取推荐训练样本……"));
     await this.yieldToMainThread();
     const training = this.repository.listTrainingItems();
     const unread = this.repository.listUnreadItems();
@@ -74,7 +75,7 @@ export class RecommendationService {
     const modelVersion = randomUUID().replaceAll("-", "");
 
     if (positiveCount < 2 || negativeCount < 2) {
-      const error = "训练样本不足：正样本和负样本均至少需要 2 篇";
+      const error = t("训练样本不足：正样本和负样本均至少需要 2 篇");
       await this.repository.replaceRecommendationResults({
         modelVersion,
         positiveCount,
@@ -100,7 +101,7 @@ export class RecommendationService {
     const labels = training.map((item) =>
       POSITIVE.has(item.itemStatus) ? 1 : 0,
     );
-    onProgress?.("正在提取关键词特征……");
+    onProgress?.(t("正在提取关键词特征……"));
     const features = await buildFeatures(
       documents,
       labels,
@@ -108,7 +109,7 @@ export class RecommendationService {
       this.yieldToMainThread,
     );
     if (features.vocabulary.length === 0) {
-      const error = "关键词模型无法训练：没有足够的重复词汇";
+      const error = t("关键词模型无法训练：没有足够的重复词汇");
       await this.repository.replaceRecommendationResults({
         modelVersion,
         positiveCount,
@@ -121,7 +122,7 @@ export class RecommendationService {
       throw new Error(error);
     }
 
-    onProgress?.("正在训练关键词模型……");
+    onProgress?.(t("正在训练关键词模型……"));
     const weights = await trainLogistic(
       features.vectors,
       labels,
@@ -135,7 +136,7 @@ export class RecommendationService {
       }
     }
 
-    onProgress?.("正在为未读文献评分……");
+    onProgress?.(t("正在为未读文献评分……"));
     const scores: NonNullable<ReturnType<typeof scoreItem>>[] = [];
     for (const [index, item] of unread.entries()) {
       const score = scoreItem(
@@ -153,7 +154,7 @@ export class RecommendationService {
       }
     }
 
-    onProgress?.("正在保存推荐结果……");
+    onProgress?.(t("正在保存推荐结果……"));
     await this.yieldToMainThread();
     await this.repository.replaceRecommendationResults({
       modelVersion,

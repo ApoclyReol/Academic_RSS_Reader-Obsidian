@@ -14,6 +14,7 @@ Academic RSS Reader 是面向学术文献初筛的桌面插件。它在本地管
 - 每批连续加载 100 条，支持打开系统浏览器和会话内撤回。
 - 使用 TypeScript TF-IDF/逻辑回归、人工关键词和可选的 OpenAI 兼容 LLM 复核进行推荐。
 - 支持视口标题翻译、总体及分订阅兴趣分析。
+- 界面自动跟随应用语言：中文环境显示简体中文，英文及其他语言环境显示英文。
 
 ## 标题翻译
 
@@ -67,7 +68,7 @@ npm run package
 - [开发说明](docs/DEVELOPMENT.md)
 - [安全与隐私](SECURITY.md)
 - [版本记录](CHANGELOG.md)
-- [v1.0.4 发布说明](docs/V1_0_4_RELEASE.md)
+- [v1.1.0 发布说明](docs/V1_1_0_RELEASE.md)
 
 ## 许可证
 

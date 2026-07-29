@@ -15,6 +15,7 @@ Academic RSS Reader is a desktop plugin for screening academic literature from R
 - Load papers continuously in batches of 100, open links in the system browser, and undo state changes during the current session.
 - Rank unread papers with TypeScript TF-IDF and logistic regression, manual keywords, and an optional OpenAI-compatible LLM review.
 - Translate visible titles and analyze interests overall or by feed.
+- Match the interface language to the app: Chinese locales use Simplified Chinese, while English and all other locales use English.
 
 ## Title translation
 
@@ -94,7 +95,7 @@ gh attestation verify main.js -R ApoclyReol/rss_reader-obsidian
 - [Development guide](docs/DEVELOPMENT.md)
 - [Security and privacy](SECURITY.md)
 - [Changelog](CHANGELOG.md)
-- [v1.0.4 release notes](docs/V1_0_4_RELEASE.md)
+- [v1.1.0 release notes](docs/V1_1_0_RELEASE.md)
 
 ## License
 
