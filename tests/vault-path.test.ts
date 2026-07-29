@@ -1,67 +1,42 @@
-import {
-  mkdir,
-  mkdtemp,
-  realpath,
-  symlink,
-} from "node:fs/promises";
-import { tmpdir } from "node:os";
-import {
-  join,
-  resolve,
-} from "node:path";
-
-import {
-  describe,
-  expect,
-  it,
-} from "vitest";
+import { describe, expect, it } from "vitest";
 
 import {
   listDirectorySuggestions,
   resolveVaultDirectoryPath,
 } from "../src/services/vault-path";
+import { MemoryAdapter } from "./helpers/memory-adapter";
 
 describe("vault directory boundaries", () => {
-  it("accepts inside paths and missing leaf directories", async () => {
-    const root = await mkdtemp(join(tmpdir(), "rss-reader-vault-"));
-    await mkdir(join(root, "Data"));
-    const realRoot = await realpath(root);
-    await expect(
-      resolveVaultDirectoryPath(root, "Data/RSS"),
-    ).resolves.toBe(resolve(realRoot, "Data/RSS"));
+  it("accepts normalized Vault-relative directories", () => {
+    expect(resolveVaultDirectoryPath("Data/RSS")).toBe("Data/RSS");
+    expect(resolveVaultDirectoryPath("Data\\RSS")).toBe("Data/RSS");
   });
 
-  it("rejects absolute paths, traversal and external symlinks", async () => {
-    const root = await mkdtemp(join(tmpdir(), "rss-reader-vault-"));
-    const outside = await mkdtemp(join(tmpdir(), "rss-reader-outside-"));
-    await symlink(outside, join(root, "External"));
-
-    await expect(
-      resolveVaultDirectoryPath(root, outside),
-    ).rejects.toThrow("相对目录");
-    await expect(
-      resolveVaultDirectoryPath(root, "../outside"),
-    ).rejects.toThrow("必须位于当前 Vault 内");
-    await expect(
-      resolveVaultDirectoryPath(root, "External/Data"),
-    ).rejects.toThrow("符号链接指向 Vault 外部");
-  });
-
-  it("keeps empty suggestions inside the vault root", async () => {
-    const parent = await mkdtemp(join(tmpdir(), "rss-reader-parent-"));
-    const root = join(parent, "Vault");
-    const outside = join(parent, "Outside");
-    await mkdir(join(root, "Inside"), { recursive: true });
-    await mkdir(outside);
-    await symlink(outside, join(root, "External"));
-
-    const suggestions = await listDirectorySuggestions(root, "");
-    expect(suggestions).toEqual(["Inside"]);
-    expect(suggestions.every((value) => !value.startsWith(".."))).toBe(
-      true,
+  it("rejects empty, absolute and traversal paths", () => {
+    expect(() => resolveVaultDirectoryPath("")).toThrow("相对目录");
+    expect(() => resolveVaultDirectoryPath("/tmp/outside")).toThrow(
+      "相对目录",
     );
+    expect(() => resolveVaultDirectoryPath("C:\\outside")).toThrow(
+      "相对目录",
+    );
+    expect(() => resolveVaultDirectoryPath("../outside")).toThrow(
+      "必须位于当前 Vault 内",
+    );
+  });
+
+  it("lists matching folders through the Vault adapter", async () => {
+    const adapter = new MemoryAdapter();
+    await adapter.mkdir("Data");
+    await adapter.mkdir("Data/RSS");
+    await adapter.mkdir("Data/Research");
+    await adapter.mkdir("Notes");
+
     await expect(
-      listDirectorySuggestions(root, outside),
+      listDirectorySuggestions(adapter, "Data/R"),
+    ).resolves.toEqual(["Data/Research", "Data/RSS"]);
+    await expect(
+      listDirectorySuggestions(adapter, "../"),
     ).resolves.toEqual([]);
   });
 });

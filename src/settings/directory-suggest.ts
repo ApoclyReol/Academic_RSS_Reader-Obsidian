@@ -1,4 +1,8 @@
-import { AbstractInputSuggest, type App } from "obsidian";
+import {
+  AbstractInputSuggest,
+  type App,
+  type DataAdapter,
+} from "obsidian";
 
 import { listDirectorySuggestions } from "../services/vault-path";
 
@@ -8,7 +12,7 @@ export class DirectorySuggest extends AbstractInputSuggest<string> {
   constructor(
     app: App,
     input: HTMLInputElement,
-    private readonly vaultRoot: string,
+    private readonly adapter: DataAdapter,
     private readonly onSelected: (path: string) => void,
   ) {
     super(app, input);
@@ -16,7 +20,7 @@ export class DirectorySuggest extends AbstractInputSuggest<string> {
 
   protected async getSuggestions(query: string): Promise<string[]> {
     return listDirectorySuggestions(
-      this.vaultRoot,
+      this.adapter,
       query,
       this.limit,
     );

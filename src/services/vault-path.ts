@@ -1,106 +1,49 @@
-import {
-  lstat,
-  readdir,
-  realpath,
-  stat,
-} from "node:fs/promises";
-import {
-  basename,
-  dirname,
-  isAbsolute,
-  join,
-  relative,
-  resolve,
-  sep,
-} from "node:path";
+import type { DataAdapter } from "obsidian";
 
-export async function resolveVaultDirectoryPath(
-  vaultRoot: string,
+export function resolveVaultDirectoryPath(
   directory: string,
-): Promise<string> {
+): string {
   const value = directory.trim();
-  if (!value || isAbsolute(value)) {
+  if (!value || isAbsolutePath(value)) {
     throw new Error("请选择当前 Vault 内的相对目录");
   }
-  const realVaultRoot = await realpath(vaultRoot);
-  const lexicalDestination = resolve(realVaultRoot, value);
-  if (!isPathInside(realVaultRoot, lexicalDestination)) {
+  const segments = value.replaceAll("\\", "/").split("/");
+  if (segments.some((segment) => segment === "..")) {
     throw new Error("数据目录必须位于当前 Vault 内");
   }
-  const realDestination =
-    await resolveWithExistingAncestor(lexicalDestination);
-  if (!isPathInside(realVaultRoot, realDestination)) {
-    throw new Error("数据目录不能通过符号链接指向 Vault 外部");
+  const normalized = normalizeVaultPath(value);
+  if (!normalized || normalized === "." || normalized.startsWith("../")) {
+    throw new Error("数据目录必须位于当前 Vault 内");
   }
-  return realDestination;
-}
-
-export function isPathInside(root: string, candidate: string): boolean {
-  const path = relative(resolve(root), resolve(candidate));
-  return (
-    path === "" ||
-    (path !== ".." &&
-      !path.startsWith(`..${sep}`) &&
-      !isAbsolute(path))
-  );
+  return normalized;
 }
 
 export async function listDirectorySuggestions(
-  vaultRoot: string,
+  adapter: DataAdapter,
   query: string,
   limit = 30,
 ): Promise<string[]> {
   const trimmed = query.trim();
-  if (isAbsolute(trimmed)) {
+  if (isAbsolutePath(trimmed) || trimmed.includes("..")) {
     return [];
   }
-  const normalized = trimmed.replace(/^\/+|\/+$/g, "");
-  const absoluteQuery = resolve(vaultRoot, normalized);
-  if (!isPathInside(vaultRoot, absoluteQuery)) {
-    return [];
-  }
-  const lexicalParent = !normalized
-    ? vaultRoot
-    : query.endsWith("/")
-      ? absoluteQuery
-      : dirname(absoluteQuery);
-  const parentRelative = relative(vaultRoot, lexicalParent) || ".";
+  const normalized = normalizeVaultPath(trimmed);
+  const parts = normalized ? normalized.split("/") : [];
+  const parent = query.endsWith("/")
+    ? normalized
+    : parts.slice(0, -1).join("/");
   const fragment = query.endsWith("/")
     ? ""
-    : normalized.split("/").at(-1)?.toLocaleLowerCase() ?? "";
+    : parts.at(-1)?.toLocaleLowerCase() ?? "";
   try {
-    const parent = await resolveVaultDirectoryPath(
-      vaultRoot,
-      parentRelative,
-    );
-    const entries = await readdir(parent, { withFileTypes: true });
-    const candidates = await Promise.all(
-      entries
-        .filter((entry) =>
-          entry.name.toLocaleLowerCase().startsWith(fragment),
-        )
-        .map(async (entry) => {
-          const lexicalCandidate = join(lexicalParent, entry.name);
-          const candidateRelative = relative(
-            vaultRoot,
-            lexicalCandidate,
-          );
-          try {
-            const resolvedCandidate =
-              await resolveVaultDirectoryPath(
-                vaultRoot,
-                candidateRelative,
-              );
-            return (await stat(resolvedCandidate)).isDirectory()
-              ? candidateRelative
-              : null;
-          } catch {
-            return null;
-          }
-        }),
-    );
-    return candidates
-      .filter((candidate): candidate is string => candidate !== null)
+    const { folders } = await adapter.list(parent || "/");
+    return folders
+      .map((folder) => normalizeVaultPath(folder))
+      .filter((folder) =>
+        (folder.split("/").at(-1) ?? "")
+          .toLocaleLowerCase()
+          .startsWith(fragment),
+      )
       .sort((left, right) => left.localeCompare(right))
       .slice(0, limit);
   } catch {
@@ -108,39 +51,17 @@ export async function listDirectorySuggestions(
   }
 }
 
-async function resolveWithExistingAncestor(
-  candidate: string,
-): Promise<string> {
-  let current = candidate;
-  const missingSegments: string[] = [];
-  while (true) {
-    try {
-      const existing = await realpath(current);
-      return resolve(existing, ...missingSegments.reverse());
-    } catch (error) {
-      if (!isMissingPath(error)) {
-        throw error;
-      }
-      const danglingLink = await lstat(current)
-        .then((entry) => entry.isSymbolicLink())
-        .catch(() => false);
-      if (danglingLink) {
-        throw new Error("数据目录包含无法解析的符号链接");
-      }
-      const parent = dirname(current);
-      if (parent === current) {
-        throw error;
-      }
-      missingSegments.push(basename(current));
-      current = parent;
-    }
-  }
+function isAbsolutePath(path: string): boolean {
+  return (
+    path.startsWith("/") ||
+    path.startsWith("\\") ||
+    /^[a-zA-Z]:[\\/]/.test(path)
+  );
 }
 
-function isMissingPath(error: unknown): boolean {
-  return (
-    error instanceof Error &&
-    "code" in error &&
-    (error as Error & { code?: unknown }).code === "ENOENT"
-  );
+function normalizeVaultPath(path: string): string {
+  return path
+    .replaceAll("\\", "/")
+    .replace(/\/+/g, "/")
+    .replace(/^\/+|\/+$/g, "");
 }

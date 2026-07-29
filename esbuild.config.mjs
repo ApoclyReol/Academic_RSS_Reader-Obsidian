@@ -1,5 +1,6 @@
 import esbuild from "esbuild";
 import process from "process";
+import { readFile } from "node:fs/promises";
 import { builtinModules } from "node:module";
 
 const production = process.argv[2] === "production";
@@ -10,6 +11,44 @@ const context = await esbuild.context({
   },
   entryPoints: ["src/main.ts"],
   bundle: true,
+  plugins: [
+    {
+      name: "sql-js-browser-runtime",
+      setup(build) {
+        build.onLoad(
+          { filter: /sql-asm\.js$/ },
+          async ({ path }) => {
+            const source = await readFile(path, "utf8");
+            const browserOnly = source
+              .replace(
+                /var aa=!!globalThis\.window,ba=!!globalThis\.WorkerGlobalScope,ca=globalThis\.process\?\.versions\?\.node&&"renderer"!=globalThis\.process\?\.type;/,
+                "var aa=!!globalThis.window,ba=!!globalThis.WorkerGlobalScope;",
+              )
+              .replace(
+                /if\(ca\)\{var fs=require\("node:fs"\);[\s\S]*?xa=\(a,b\)=>\{process\.exitCode=a;throw b;\}\}else if\(aa\|\|ba\)/,
+                "if(aa||ba)",
+              )
+              .replace(
+                /\$a=\(\)=>\{if\(ca\)\{var a=require\("node:crypto"\);return b=>a\.randomFillSync\(b\)\}return b=>crypto\.getRandomValues\(b\)\}/,
+                "$a=()=>b=>crypto.getRandomValues(b)",
+              );
+            if (
+              browserOnly === source ||
+              /require\("node:(?:fs|crypto)"\)/.test(browserOnly)
+            ) {
+              throw new Error(
+                "Could not lock sql.js to its browser runtime",
+              );
+            }
+            return {
+              contents: browserOnly,
+              loader: "js",
+            };
+          },
+        );
+      },
+    },
+  ],
   external: [
     "obsidian",
     "electron",
@@ -29,6 +68,9 @@ const context = await esbuild.context({
   ],
   format: "cjs",
   target: "es2021",
+  define: {
+    "globalThis.process": "undefined",
+  },
   logLevel: "info",
   sourcemap: production ? false : "inline",
   treeShaking: true,

@@ -1,12 +1,3 @@
-import {
-  access,
-  mkdtemp,
-  readFile,
-  writeFile,
-} from "node:fs/promises";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
-
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
@@ -15,14 +6,16 @@ import {
 } from "../src/database/database";
 import { RssRepository } from "../src/repositories/rss-repository";
 import { stableGuid } from "../src/services/rss-parser";
+import { MemoryAdapter } from "./helpers/memory-adapter";
 
 describe("database and repository", () => {
   let database: RssDatabase;
   let repository: RssRepository;
+  let adapter: MemoryAdapter;
 
   beforeEach(async () => {
-    const directory = await mkdtemp(join(tmpdir(), "rss-reader-test-"));
-    database = new RssDatabase(join(directory, "test.sqlite3"));
+    adapter = new MemoryAdapter();
+    database = new RssDatabase(adapter, "Data/test.sqlite3");
     await database.initialize();
     repository = new RssRepository(database);
   });
@@ -84,17 +77,14 @@ describe("database and repository", () => {
   });
 
   it("exports and restores a database backup", async () => {
-    const destinationDirectory = await mkdtemp(
-      join(tmpdir(), "rss-reader-backup-"),
-    );
     await repository.addFeed({
       name: "Before restore",
       url: "https://example.com/before",
       enabled: true,
     });
-    const destination = join(destinationDirectory, "backup.sqlite3");
+    const destination = "Backups/backup.sqlite3";
     await database.backup(destination);
-    await expect(access(destination)).resolves.toBeUndefined();
+    await expect(adapter.exists(destination)).resolves.toBe(true);
     await repository.addFeed({
       name: "After backup",
       url: "https://example.com/after",
@@ -106,30 +96,29 @@ describe("database and repository", () => {
   });
 
   it("does not create a database when existing-file loading is required", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "rss-reader-load-"));
-    const path = join(directory, "missing.sqlite3");
-    const candidate = new RssDatabase(path);
+    const path = "Missing/missing.sqlite3";
+    const candidate = new RssDatabase(adapter, path);
     await expect(
       candidate.initialize({ createIfMissing: false }),
     ).rejects.toThrow("没有 rss-reader.sqlite3");
-    await expect(access(path)).rejects.toBeDefined();
+    await expect(adapter.exists(path)).resolves.toBe(false);
     candidate.close();
   });
 
   it("inspects valid and damaged databases without modifying them", async () => {
-    expect(await inspectDatabaseFile(database.path)).toEqual({
+    expect(await inspectDatabaseFile(adapter, database.path)).toEqual({
       exists: true,
       valid: true,
       error: null,
     });
-    const directory = await mkdtemp(join(tmpdir(), "rss-reader-invalid-"));
-    const path = join(directory, "rss-reader.sqlite3");
+    const path = "Invalid/rss-reader.sqlite3";
+    await adapter.mkdir("Invalid");
     const bytes = new TextEncoder().encode("not a sqlite database");
-    await writeFile(path, bytes);
-    const result = await inspectDatabaseFile(path);
+    await adapter.writeBinary(path, bytes.buffer);
+    const result = await inspectDatabaseFile(adapter, path);
     expect(result.exists).toBe(true);
     expect(result.valid).toBe(false);
-    expect(await readFile(path)).toEqual(Buffer.from(bytes));
+    expect(new Uint8Array(await adapter.readBinary(path))).toEqual(bytes);
   });
 
   it("repairs incompatible GUID duplicates without losing user state", async () => {

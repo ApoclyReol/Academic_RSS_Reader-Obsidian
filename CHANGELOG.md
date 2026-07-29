@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.4 — 2026-07-30
+
+- 运行时数据库、迁移、备份和恢复改用 Obsidian Vault `DataAdapter`，不再直接调用 Node.js 文件系统。
+- 路径统一为规范化的 Vault 相对路径，并拒绝绝对路径和 `..` 越界。
+- 数据库继续采用临时文件保护替换，替换失败时恢复上一文件。
+- 修正 manifest 英文描述及结尾标点，主 README 改为完整英文说明，并保留独立中文版本。
+- 新增 tag 发布工作流，为三个受支持发布文件生成 GitHub artifact attestations。
+- GitHub Release 只上传 `main.js`、`manifest.json`、`styles.css`；ZIP 和校验文件仅保留为本地产物。
+
 ## 1.0.3 — 2026-07-29
 
 - 修复已打开 RSS 窗口随工作区恢复时阻塞 Obsidian 启动，以及首次打开只显示空标签的问题。

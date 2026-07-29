@@ -1,0 +1,57 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "*.*.*"
+
+permissions:
+  attestations: write
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Verify tag and manifest version
+        shell: bash
+        run: |
+          manifest_version="$(node -p "require('./manifest.json').version")"
+          test "$GITHUB_REF_NAME" = "$manifest_version"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate and build
+        run: |
+          npm run lint -- --max-warnings=0
+          npm test
+          npm run build
+
+      - name: Generate release attestations
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            main.js
+            manifest.json
+            styles.css
+
+      - name: Publish supported release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "$GITHUB_REF_NAME"
+          main.js manifest.json styles.css
+          --generate-notes
+          --title "$GITHUB_REF_NAME"
+          --verify-tag

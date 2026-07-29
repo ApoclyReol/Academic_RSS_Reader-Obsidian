@@ -1,7 +1,3 @@
-import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-
 import { Window as HappyWindow } from "happy-dom";
 import {
   afterEach,
@@ -20,6 +16,7 @@ import type {
   TranslationResult,
 } from "../src/services/translation-provider";
 import { TranslationService } from "../src/services/translation-service";
+import { MemoryAdapter } from "./helpers/memory-adapter";
 
 const timerWindow = new HappyWindow() as unknown as Pick<
   Window,
@@ -195,9 +192,10 @@ async function createRepository(
   repository: RssRepository;
   itemIds: number[];
 }> {
-  const directory = await mkdtemp(join(tmpdir(), "rss-reader-lifecycle-"));
+  const adapter = new MemoryAdapter();
   const database = new RssDatabase(
-    join(directory, "rss-reader.sqlite3"),
+    adapter,
+    "Data/rss-reader.sqlite3",
     coordinator,
   );
   await database.initialize();

@@ -64,7 +64,7 @@ export class RssReaderSettingTab extends PluginSettingTab {
         this.directorySuggest = new DirectorySuggest(
           this.app,
           text.inputEl,
-          this.plugin.getVaultRoot(),
+          this.plugin.getVaultAdapter(),
           (value) => {
             dataDirectory = value;
             this.updateDirectoryInspection(value, inspection);

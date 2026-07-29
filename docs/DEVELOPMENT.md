@@ -36,7 +36,8 @@ src/
 - RSS 解析器只生成领域对象，不调用翻译 Provider。
 - Feed Service 先完成 RSS 入库，再通知翻译服务。
 - UI 不直接执行 SQL。
-- 所有数据库写入经同一写链和事务，提交后以临时文件原子替换。
+- 所有运行时文件操作使用 Obsidian Vault `DataAdapter` 和 Vault 相对路径。
+- 所有数据库写入经同一写链和事务，提交后以临时文件保护替换；替换失败时恢复上一文件。
 - 推荐模型只在用户主动操作时重建。
 - 标题翻译只由阅读页开关触发；译文变化局部更新卡片，不重绘整个列表。
 - 插件加载阶段不创建数据库；用户选择 Vault 内数据目录并创建或载入后，才构造 Repository 和业务服务。
@@ -109,4 +110,10 @@ academic-rss-reader/
 └── styles.css
 ```
 
-GitHub Release 标签与 `manifest.json` 完全相同且不带 `v`。
+GitHub Release 标签与 `manifest.json` 完全相同且不带 `v`。推送版本标签后，`.github/workflows/release.yml` 会重新执行 lint、测试和构建，为 `main.js`、`manifest.json`、`styles.css` 生成 artifact attestations，并只将这三个受支持文件上传到 GitHub Release。版本化 ZIP 和 `SHA256SUMS.txt` 只作为本地手动安装与校验产物，不上传到 Release。
+
+下载后可验证来源：
+
+```bash
+gh attestation verify main.js -R ApoclyReol/rss_reader-obsidian
+```

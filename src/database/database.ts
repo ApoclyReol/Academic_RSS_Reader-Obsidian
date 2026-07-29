@@ -1,14 +1,4 @@
-import {
-  access,
-  copyFile,
-  mkdir,
-  readFile,
-  rename,
-  unlink,
-  writeFile,
-} from "node:fs/promises";
-import { dirname, join } from "node:path";
-
+import type { DataAdapter } from "obsidian";
 import type {
   BindParams,
   Database,
@@ -25,6 +15,7 @@ export class RssDatabase {
   private writeChain: Promise<void> = Promise.resolve();
 
   constructor(
+    private readonly adapter: DataAdapter,
     private readonly databasePath: string,
     private operationCoordinator?: DatabaseOperationCoordinator,
   ) {}
@@ -36,16 +27,13 @@ export class RssDatabase {
   }
 
   async initialize(options: { createIfMissing?: boolean } = {}): Promise<void> {
-    await mkdir(dirname(this.databasePath), { recursive: true });
+    await ensureDirectory(this.adapter, parentPath(this.databasePath));
     this.sql = await initSqlJs();
 
-    try {
-      const bytes = await readFile(this.databasePath);
-      this.database = new this.sql.Database(bytes);
-    } catch (error) {
-      if (!this.isMissingFile(error)) {
-        throw error;
-      }
+    if (await this.adapter.exists(this.databasePath)) {
+      const bytes = await this.adapter.readBinary(this.databasePath);
+      this.database = new this.sql.Database(new Uint8Array(bytes));
+    } else {
       if (options.createIfMissing === false) {
         throw new Error("所选目录中没有 rss-reader.sqlite3");
       }
@@ -114,13 +102,13 @@ export class RssDatabase {
 
   async backup(destinationPath: string): Promise<void> {
     await this.writeChain;
-    await mkdir(dirname(destinationPath), { recursive: true });
-    await copyFile(this.databasePath, destinationPath);
+    await ensureDirectory(this.adapter, parentPath(destinationPath));
+    await this.adapter.copy(this.databasePath, destinationPath);
   }
 
   async restoreFromFile(sourcePath: string): Promise<void> {
-    const bytes = await readFile(sourcePath);
-    await this.replaceFromBytes(bytes);
+    const bytes = await this.adapter.readBinary(sourcePath);
+    await this.replaceFromBytes(new Uint8Array(bytes));
   }
 
   async replaceFromBytes(bytes: Uint8Array): Promise<void> {
@@ -156,11 +144,29 @@ export class RssDatabase {
 
   private async persistDatabase(database: Database): Promise<void> {
     const temporaryPath = `${this.databasePath}.tmp`;
-    await writeFile(temporaryPath, database.export());
+    const previousPath = `${this.databasePath}.previous`;
+    await removeIfExists(this.adapter, temporaryPath);
+    await removeIfExists(this.adapter, previousPath);
+    await this.adapter.writeBinary(
+      temporaryPath,
+      toArrayBuffer(database.export()),
+    );
+    const hadPrevious = await this.adapter.exists(this.databasePath);
     try {
-      await rename(temporaryPath, this.databasePath);
+      if (hadPrevious) {
+        await this.adapter.rename(this.databasePath, previousPath);
+      }
+      await this.adapter.rename(temporaryPath, this.databasePath);
+      await removeIfExists(this.adapter, previousPath);
     } catch (error) {
-      await unlink(temporaryPath).catch(() => undefined);
+      if (
+        hadPrevious &&
+        !(await this.adapter.exists(this.databasePath)) &&
+        (await this.adapter.exists(previousPath))
+      ) {
+        await this.adapter.rename(previousPath, this.databasePath);
+      }
+      await removeIfExists(this.adapter, temporaryPath);
       throw error;
     }
   }
@@ -170,13 +176,6 @@ export class RssDatabase {
     return this.sql;
   }
 
-  private isMissingFile(error: unknown): boolean {
-    return (
-      error instanceof Error &&
-      "code" in error &&
-      (error as Error & { code?: unknown }).code === "ENOENT"
-    );
-  }
 }
 
 export function databasePaths(
@@ -186,8 +185,10 @@ export function databasePaths(
   backupDirectory: string;
 } {
   return {
-    databasePath: join(dataDirectory, "rss-reader.sqlite3"),
-    backupDirectory: join(dataDirectory, "backups"),
+    databasePath: normalizeVaultPath(
+      `${dataDirectory}/rss-reader.sqlite3`,
+    ),
+    backupDirectory: normalizeVaultPath(`${dataDirectory}/backups`),
   };
 }
 
@@ -198,29 +199,19 @@ export interface DatabaseInspection {
 }
 
 export async function inspectDatabaseFile(
+  adapter: DataAdapter,
   databasePath: string,
 ): Promise<DatabaseInspection> {
-  try {
-    await access(databasePath);
-  } catch (error) {
-    if (
-      error instanceof Error &&
-      "code" in error &&
-      (error as Error & { code?: unknown }).code === "ENOENT"
-    ) {
-      return { exists: false, valid: false, error: null };
-    }
-    return {
-      exists: false,
-      valid: false,
-      error: error instanceof Error ? error.message : String(error),
-    };
+  if (!(await adapter.exists(databasePath))) {
+    return { exists: false, valid: false, error: null };
   }
 
   let database: Database | null = null;
   try {
     const sql = await initSqlJs();
-    database = new sql.Database(await readFile(databasePath));
+    database = new sql.Database(
+      new Uint8Array(await adapter.readBinary(databasePath)),
+    );
     const integrity = database.exec("PRAGMA integrity_check");
     const result = integrity[0]?.values[0]?.[0];
     if (result !== "ok") {
@@ -246,4 +237,41 @@ export async function inspectDatabaseFile(
   } finally {
     database?.close();
   }
+}
+
+function parentPath(path: string): string {
+  return path.split("/").slice(0, -1).join("/");
+}
+
+async function ensureDirectory(
+  adapter: DataAdapter,
+  directory: string,
+): Promise<void> {
+  if (!directory) {
+    return;
+  }
+  let current = "";
+  for (const segment of directory.split("/").filter(Boolean)) {
+    current = current ? `${current}/${segment}` : segment;
+    if (!(await adapter.exists(current))) {
+      await adapter.mkdir(current);
+    }
+  }
+}
+
+async function removeIfExists(
+  adapter: DataAdapter,
+  path: string,
+): Promise<void> {
+  if (await adapter.exists(path)) {
+    await adapter.remove(path);
+  }
+}
+
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  return bytes.slice().buffer;
+}
+
+function normalizeVaultPath(path: string): string {
+  return path.replaceAll("\\", "/").replace(/\/+/g, "/");
 }

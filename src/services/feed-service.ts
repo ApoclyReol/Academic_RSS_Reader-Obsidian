@@ -200,7 +200,7 @@ export class FeedService {
           headers: {
             Accept:
               "application/rss+xml, application/atom+xml, application/xml, text/xml, */*",
-            "User-Agent": "Academic-RSS-Reader/1.0.2",
+            "User-Agent": "Academic-RSS-Reader/1.0.4",
           },
           throw: false,
         });

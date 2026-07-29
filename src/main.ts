@@ -1,17 +1,7 @@
 import {
-  readdir,
-  stat,
-} from "node:fs/promises";
-import {
-  dirname,
-  isAbsolute,
-  join,
-} from "node:path";
-
-import {
-  FileSystemAdapter,
   normalizePath,
   Notice,
+  Platform,
   Plugin,
 } from "obsidian";
 
@@ -60,7 +50,6 @@ export default class RssReaderPlugin extends Plugin {
   databaseError: string | null = null;
   private context: ServiceContext | null = null;
   private automaticUpdateStarted = false;
-  private vaultRoot = "";
   private readonly operationCoordinator =
     new DatabaseOperationCoordinator();
   private static readonly LLM_SECRET_ID =
@@ -92,11 +81,9 @@ export default class RssReaderPlugin extends Plugin {
 
   async onload(): Promise<void> {
     await this.loadSettings();
-    const adapter = this.app.vault.adapter;
-    if (!(adapter instanceof FileSystemAdapter)) {
-      throw new Error("Academic RSS Reader 仅支持 Obsidian 桌面端文件系统");
+    if (!Platform.isDesktop) {
+      throw new Error("Academic RSS Reader 仅支持桌面端");
     }
-    this.vaultRoot = adapter.getBasePath();
 
     this.registerView(
       RSS_READER_VIEW_TYPE,
@@ -174,8 +161,8 @@ export default class RssReaderPlugin extends Plugin {
     return this.databaseState === "ready" && this.context !== null;
   }
 
-  getVaultRoot(): string {
-    return this.vaultRoot;
+  getVaultAdapter(): typeof this.app.vault.adapter {
+    return this.app.vault.adapter;
   }
 
   getCurrentDatabasePath(): string | null {
@@ -186,9 +173,7 @@ export default class RssReaderPlugin extends Plugin {
     if (!this.isDatabaseReady()) {
       return null;
     }
-    return databasePaths(
-      dirname(this.requireContext().database.path),
-    ).backupDirectory;
+    return databasePaths(this.settings.dataDirectory).backupDirectory;
   }
 
   async inspectDataDirectory(
@@ -197,7 +182,10 @@ export default class RssReaderPlugin extends Plugin {
     const paths = databasePaths(
       await this.resolveVaultDirectory(directory),
     );
-    return inspectDatabaseFile(paths.databasePath);
+    return inspectDatabaseFile(
+      this.app.vault.adapter,
+      paths.databasePath,
+    );
   }
 
   prepareDatabaseOnViewOpen(): void {
@@ -225,7 +213,10 @@ export default class RssReaderPlugin extends Plugin {
     const paths = databasePaths(
       await this.resolveVaultDirectory(normalized),
     );
-    const inspection = await inspectDatabaseFile(paths.databasePath);
+    const inspection = await inspectDatabaseFile(
+      this.app.vault.adapter,
+      paths.databasePath,
+    );
     if (inspection.exists) {
       throw new Error("所选目录已存在 rss-reader.sqlite3，请使用载入");
     }
@@ -269,6 +260,7 @@ export default class RssReaderPlugin extends Plugin {
         throw new Error("所选目录指向当前数据目录");
       }
       const targetInspection = await inspectDatabaseFile(
+        this.app.vault.adapter,
         targetPaths.databasePath,
       );
 
@@ -285,7 +277,10 @@ export default class RssReaderPlugin extends Plugin {
       await this.createProtectionBackup("before-switch");
       if (mode === "migrate") {
         await current.database.backup(targetPaths.databasePath);
-        const copied = await inspectDatabaseFile(targetPaths.databasePath);
+        const copied = await inspectDatabaseFile(
+          this.app.vault.adapter,
+          targetPaths.databasePath,
+        );
         if (!copied.valid) {
           throw new Error(copied.error ?? "迁移后的数据库校验失败");
         }
@@ -325,19 +320,20 @@ export default class RssReaderPlugin extends Plugin {
       if (!backupDirectory) {
         throw new Error("请先配置并载入数据库");
       }
-      const entries = await readdir(backupDirectory, {
-        withFileTypes: true,
-      }).catch(() => []);
+      const entries = await this.app.vault.adapter
+        .list(backupDirectory)
+        .then((listed) => listed.files)
+        .catch(() => []);
       const candidates = await Promise.all(
         entries
-          .filter(
-            (entry) =>
-              entry.isFile() &&
-              /^(before-|manual-).*\.(sqlite3|sqlite|db)$/i.test(entry.name),
+          .filter((path) =>
+            /^(before-|manual-).*\.(sqlite3|sqlite|db)$/i.test(
+              path.split("/").at(-1) ?? "",
+            ),
           )
-          .map(async (entry) => {
-            const path = join(backupDirectory, entry.name);
-            return { path, modifiedAt: (await stat(path)).mtimeMs };
+          .map(async (path) => {
+            const fileStat = await this.app.vault.adapter.stat(path);
+            return { path, modifiedAt: fileStat?.mtime ?? 0 };
           }),
       );
       const ordered = candidates.sort(
@@ -345,7 +341,14 @@ export default class RssReaderPlugin extends Plugin {
       );
       let source: string | null = null;
       for (const candidate of ordered) {
-        if ((await inspectDatabaseFile(candidate.path)).valid) {
+        if (
+          (
+            await inspectDatabaseFile(
+              this.app.vault.adapter,
+              candidate.path,
+            )
+          ).valid
+        ) {
           source = candidate.path;
           break;
         }
@@ -460,7 +463,10 @@ export default class RssReaderPlugin extends Plugin {
     if (!timerWindow) {
       throw new Error("无法获取 Obsidian 工作区窗口");
     }
-    const database = new RssDatabase(databasePath);
+    const database = new RssDatabase(
+      this.app.vault.adapter,
+      databasePath,
+    );
     try {
       await database.initialize({ createIfMissing });
       const repository = new RssRepository(database);
@@ -538,9 +544,8 @@ export default class RssReaderPlugin extends Plugin {
     if (!backupDirectory) {
       throw new Error("请先配置并载入数据库");
     }
-    const destination = join(
-      backupDirectory,
-      `${prefix}-${fileTimestamp()}.sqlite3`,
+    const destination = normalizePath(
+      `${backupDirectory}/${prefix}-${fileTimestamp()}.sqlite3`,
     );
     await context.database.backup(destination);
     return destination;
@@ -623,11 +628,8 @@ export default class RssReaderPlugin extends Plugin {
   private async resolveVaultDirectory(
     directory: string,
   ): Promise<string> {
-    if (isAbsolute(directory.trim())) {
-      throw new Error("请选择当前 Vault 内的相对目录");
-    }
     const value = normalizeDirectory(directory);
-    return resolveVaultDirectoryPath(this.vaultRoot, value);
+    return resolveVaultDirectoryPath(value);
   }
 
   getLlmApiKey(): string {

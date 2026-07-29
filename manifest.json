@@ -1,9 +1,9 @@
 {
   "id": "academic-rss-reader",
   "name": "Academic RSS Reader",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "minAppVersion": "1.11.4",
-  "description": "在 Obsidian 中订阅、阅读和整理学术 RSS 文献。",
+  "description": "Subscribe to, read, organize, and prioritize academic RSS literature locally.",
   "author": "ApoclyReol",
   "isDesktopOnly": true
 }
