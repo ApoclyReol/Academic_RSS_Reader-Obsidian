@@ -220,7 +220,10 @@ export default class RssReaderPlugin extends Plugin {
       this.app.vault.adapter,
       paths.databasePath,
     );
-    if (inspection.exists) {
+    if (
+      inspection.exists ||
+      (await this.hasRecoveryCandidate(paths.databasePath))
+    ) {
       throw new Error(t("所选目录已存在 rss-reader.sqlite3，请使用载入"));
     }
     await this.activateInitialDatabase(normalized, true);
@@ -235,7 +238,13 @@ export default class RssReaderPlugin extends Plugin {
       throw new Error(t("数据库已在运行；请使用“切换数据目录”"));
     }
     const inspection = await this.inspectDataDirectory(normalized);
-    if (!inspection.exists || !inspection.valid) {
+    const path = databasePaths(
+      await this.resolveVaultDirectory(normalized),
+    ).databasePath;
+    if (
+      !inspection.valid &&
+      !(await this.hasRecoveryCandidate(path))
+    ) {
       throw new Error(
         inspection.error ?? t("所选目录中没有 rss-reader.sqlite3"),
       );
@@ -271,13 +280,17 @@ export default class RssReaderPlugin extends Plugin {
         if (targetInspection.exists) {
           throw new Error(t("目标目录已存在 rss-reader.sqlite3，迁移不会覆盖它"));
         }
-      } else if (!targetInspection.exists || !targetInspection.valid) {
+      } else if (
+        !targetInspection.valid &&
+        !(await this.hasRecoveryCandidate(targetPaths.databasePath))
+      ) {
         throw new Error(
           targetInspection.error ?? t("目标目录中没有可载入的 rss-reader.sqlite3"),
         );
       }
 
       await this.createProtectionBackup("before-switch");
+      await current.database.drain();
       if (mode === "migrate") {
         await current.database.backup(targetPaths.databasePath);
         const copied = await inspectDatabaseFile(
@@ -360,6 +373,7 @@ export default class RssReaderPlugin extends Plugin {
         throw new Error(t("当前数据目录的 backups 中没有有效数据库备份"));
       }
       await this.createProtectionBackup("before-restore");
+      await context.database.drain();
       await context.database.restoreFromFile(source);
       await context.translationService.initialize();
       this.databaseError = null;
@@ -438,14 +452,19 @@ export default class RssReaderPlugin extends Plugin {
     const path = databasePaths(
       await this.resolveVaultDirectory(directory),
     ).databasePath;
+    const previous = this.context;
     let next: ServiceContext | null = null;
     try {
       next = await this.buildContext(path, createIfMissing);
       await this.saveData({ ...this.settings, dataDirectory: directory });
       this.context = next;
+      next = null;
       this.settings.dataDirectory = directory;
       this.databaseState = "ready";
       this.automaticUpdateStarted = false;
+      if (previous && previous !== this.context) {
+        await this.disposeContext(previous).catch(() => undefined);
+      }
       await this.refreshViews();
     } catch (error) {
       await this.disposeContext(next);
@@ -469,9 +488,21 @@ export default class RssReaderPlugin extends Plugin {
     const database = new RssDatabase(
       this.app.vault.adapter,
       databasePath,
+      undefined,
+      (error) => this.handleDatabaseStorageFailure(databasePath, error),
     );
     try {
       await database.initialize({ createIfMissing });
+      const recovery = database.recovery;
+      if (recovery?.recovered) {
+        new Notice(
+          tx(
+            `检测到保存中断，已从${recovery.source === "temporary" ? "临时快照" : "上一版本快照"}自动恢复数据库。`,
+            `An interrupted save was detected. The database was automatically restored from the ${recovery.source === "temporary" ? "temporary snapshot" : "previous snapshot"}.`,
+          ),
+          10_000,
+        );
+      }
       const repository = new RssRepository(database);
       const identityRepair = await repository.repairLegacyItemIdentity();
       if (identityRepair.removedItems > 0) {
@@ -568,10 +599,46 @@ export default class RssReaderPlugin extends Plugin {
     }
     context.unsubscribeTranslation();
     await context.translationService.stop();
+    let drainError: unknown;
+    try {
+      await context.database.drain();
+    } catch (error) {
+      drainError = error;
+    }
     context.database.close();
     if (this.context === context) {
       this.context = null;
     }
+    if (drainError) {
+      throw drainError instanceof Error
+        ? drainError
+        : new Error(
+            typeof drainError === "string"
+              ? drainError
+              : t("未知错误"),
+          );
+    }
+  }
+
+  private async hasRecoveryCandidate(databasePath: string): Promise<boolean> {
+    return (
+      (await this.app.vault.adapter.exists(`${databasePath}.tmp`)) ||
+      (await this.app.vault.adapter.exists(`${databasePath}.previous`))
+    );
+  }
+
+  private handleDatabaseStorageFailure(
+    databasePath: string,
+    error: Error,
+  ): void {
+    if (this.context?.database.path !== databasePath) {
+      return;
+    }
+    this.databaseState = "error";
+    this.databaseError = error.message;
+    void this.context.translationService.stop();
+    new Notice(error.message, 0);
+    void this.refreshViews().catch(() => undefined);
   }
 
   private requireContext(): ServiceContext {

@@ -20,6 +20,12 @@ The original file is kept unchanged when validation fails.
 3. Do not replace or delete the original database while diagnosing the problem.
 4. If a valid backup exists, use **Restore latest backup** from settings. The plugin creates another protection backup before restoration.
 
+If a save was interrupted, the plugin automatically checks
+`rss-reader.sqlite3.tmp` and `rss-reader.sqlite3.previous`, in that order, but
+only after the primary database is missing or fails validation. Do not rename or
+delete these files before the automatic recovery attempt. If all snapshots are
+invalid, the plugin preserves them and asks you to restore from `backups/`.
+
 Backups are stored in the selected data directory's `backups/` subdirectory.
 
 ## Moving data to another directory

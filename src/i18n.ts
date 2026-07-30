@@ -16,6 +16,14 @@ const ENGLISH: Readonly<Record<string, string>> = {
     "The selected directory already contains rss-reader.sqlite3. Load it instead.",
   "所选目录中没有 rss-reader.sqlite3":
     "The selected directory does not contain rss-reader.sqlite3.",
+  "数据库仍有保存任务正在进行":
+    "The database still has a save operation in progress.",
+  "临时数据库快照校验失败":
+    "The temporary database snapshot failed validation.",
+  "保存后的数据库校验失败":
+    "The saved database failed validation.",
+  "恢复后的数据库校验失败":
+    "The restored database failed validation.",
   "所选目录就是当前数据目录":
     "The selected directory is already the current data directory.",
   "所选目录指向当前数据目录":

@@ -78,6 +78,17 @@ The settings page supports:
 
 The plugin does not create a database during startup. A failed validation keeps the original file unchanged and does not create a recovery database.
 
+Database saves use validated temporary and previous snapshots. When the reader
+loads a configured directory, a valid `rss-reader.sqlite3` is used immediately.
+Only when that file is missing or invalid does the plugin try
+`rss-reader.sqlite3.tmp`, then `rss-reader.sqlite3.previous`. A recovered file is
+validated again before the leftover snapshots are removed. If no valid snapshot
+exists, loading stops and the original files are preserved for backup recovery.
+
+Normal database switching, restoration, and plugin shutdown wait for queued
+writes to finish. If an in-memory commit cannot be saved to disk, further writes
+are disabled and the reader reports that memory and disk may be inconsistent.
+
 ## Development
 
 Node.js 18 or later is required.

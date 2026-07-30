@@ -57,6 +57,36 @@ describe("database lifecycle coordination", () => {
     expect(() => coordinator.acquireTransition()).not.toThrow();
   });
 
+  it("drains an in-flight save before allowing close", async () => {
+    const adapter = new DelayedWriteAdapter();
+    const database = new RssDatabase(
+      adapter,
+      "Data/rss-reader.sqlite3",
+    );
+    await database.initialize();
+    adapter.delayNextTemporaryWrite();
+    const writing = database.write((db) => {
+      db.run(
+        "INSERT INTO feeds(name,url,enabled) VALUES ('Drain','https://example.com/drain',1)",
+      );
+    });
+    await adapter.writeStarted;
+
+    let drained = false;
+    const draining = database.drain().then(() => {
+      drained = true;
+    });
+    await Promise.resolve();
+    expect(drained).toBe(false);
+    expect(() => database.close()).toThrow("保存任务正在进行");
+
+    adapter.releaseWrite();
+    await writing;
+    await draining;
+    expect(drained).toBe(true);
+    database.close();
+  });
+
   it("waits for an in-flight translation and prevents post-stop writes", async () => {
     const coordinator = new DatabaseOperationCoordinator();
     const { database, repository, itemIds } = await createRepository(
@@ -225,4 +255,36 @@ async function createRepository(
     repository,
     itemIds: stored.insertedIds,
   };
+}
+
+class DelayedWriteAdapter extends MemoryAdapter {
+  private shouldDelay = false;
+  private startWrite: (() => void) | null = null;
+  private finishWrite: (() => void) | null = null;
+  writeStarted: Promise<void> = Promise.resolve();
+
+  delayNextTemporaryWrite(): void {
+    this.shouldDelay = true;
+    this.writeStarted = new Promise<void>((resolve) => {
+      this.startWrite = resolve;
+    });
+  }
+
+  releaseWrite(): void {
+    this.finishWrite?.();
+  }
+
+  override async writeBinary(
+    path: string,
+    data: ArrayBuffer,
+  ): Promise<void> {
+    if (this.shouldDelay && path.endsWith(".tmp")) {
+      this.shouldDelay = false;
+      this.startWrite?.();
+      await new Promise<void>((resolve) => {
+        this.finishWrite = resolve;
+      });
+    }
+    await super.writeBinary(path, data);
+  }
 }
