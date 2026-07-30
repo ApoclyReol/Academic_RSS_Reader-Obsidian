@@ -22,7 +22,15 @@ Academic RSS Reader 是面向学术文献初筛的桌面插件。它在本地管
 
 ## 安装
 
-插件仅支持桌面端，最低版本为 1.11.4。从对应 GitHub Release 下载 `main.js`、`manifest.json` 和 `styles.css`，放入：
+插件已上线 Obsidian 社区插件市场，仅支持桌面端，最低版本为 1.11.4。推荐安装方式：
+
+1. 打开“设置 → 第三方插件”。
+2. 选择“浏览”，搜索 **Academic RSS Reader**。
+3. 点击“安装”，然后启用插件。
+
+### 手动安装
+
+手动安装仅作为备用方案。从对应 GitHub Release 下载 `main.js`、`manifest.json` 和 `styles.css`，放入：
 
 ```text
 <Vault>/.obsidian/plugins/academic-rss-reader/
@@ -66,9 +74,10 @@ npm run package
 ## 文档
 
 - [开发说明](docs/DEVELOPMENT.md)
+- [故障排查](docs/TROUBLESHOOTING.zh-CN.md)
 - [安全与隐私](SECURITY.md)
 - [版本记录](CHANGELOG.md)
-- [v1.1.0 发布说明](docs/V1_1_0_RELEASE.md)
+- [v1.1.1 发布说明](docs/V1_1_1_RELEASE.md)
 
 ## 许可证
 

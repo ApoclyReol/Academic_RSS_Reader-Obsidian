@@ -7,6 +7,7 @@ import {
   t,
   tx,
 } from "../src/i18n";
+import { statusLabel } from "../src/views/status-label";
 
 describe("UI localization", () => {
   beforeEach(() => setUiLanguage("zh-CN"));
@@ -32,5 +33,22 @@ describe("UI localization", () => {
   it("tracks dictionary coverage", () => {
     expect(hasEnglishTranslation("打开阅读器")).toBe(true);
     expect(hasEnglishTranslation("不存在的文案")).toBe(false);
+  });
+
+  it("translates basket labels after the UI language is initialized", () => {
+    setUiLanguage("en");
+    expect([
+      statusLabel("unread"),
+      statusLabel("interested"),
+      statusLabel("archived"),
+      statusLabel("hidden"),
+      statusLabel("expired"),
+    ]).toEqual([
+      "Unread",
+      "Interested",
+      "Archived",
+      "Hidden",
+      "Expired",
+    ]);
   });
 });

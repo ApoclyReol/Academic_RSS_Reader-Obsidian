@@ -43,6 +43,27 @@ src/
 - 插件加载阶段不创建数据库；用户选择 Vault 内数据目录并创建或载入后，才构造 Repository 和业务服务。
 - 运行数据库与 `backups/` 固定在用户选择的数据目录，插件目录只保留 Obsidian 管理的设置和发布文件。
 
+## 启动顺序与状态所有权
+
+```text
+Plugin.onload
+→ 根据 getLanguage() 初始化界面语言
+→ 读取 data.json 并迁移旧 SecretStorage 配置
+→ 注册 view、commands、ribbon 和 settings
+→ 用户首次打开阅读器
+→ 检查配置并在后台载入数据库
+→ 创建 RssDatabase、RssRepository 和各业务 service
+→ 恢复翻译队列并按设置启动订阅更新
+```
+
+- `RssReaderPlugin` 拥有当前数据库上下文与 `DatabaseState`，负责创建和释放 services。
+- `RssDatabase` 拥有 sql.js 实例、串行写链和二进制持久化。
+- `RssRepository` 是唯一 SQL 访问入口。
+- `DatabaseOperationCoordinator` 跟踪后台任务，并在切换或恢复数据库时阻止新写入。
+- `TranslationService` 拥有翻译队列；数据库恢复后重新载入未完成任务。
+- `RssReaderView` 只读取 repository 与调用 services，不持有数据库生命周期。
+- 界面语言在插件启动时初始化，所有文案在渲染或操作发生时解析；不得在模块顶层缓存 `t()` 结果。
+
 ## 去重兼容规则
 
 v1.0.0 必须保持旧 Streamlit 身份规则：
@@ -95,6 +116,12 @@ v1.0.0 增加：
 
 正式版本发布前，应在 Windows 和 macOS 桌面环境分别执行上述功能测试，并在对应版本发布说明中记录平台验证结果。
 
+## 延期事项
+
+- 在最低支持版本仍为 Obsidian 1.11.4 时保留 `PluginSettingTab.display()`。
+- 正式采用 Obsidian 1.13 后，提高 `minAppVersion`，迁移到 `getSettingDefinitions()`，删除 `display()` / `redisplay()`。
+- 迁移时验证设置搜索、动态数据库状态、Vault 目录联想、SecretStorage 和操作按钮。
+
 ## 发布
 
 版本必须同时更新：
@@ -104,6 +131,7 @@ v1.0.0 增加：
 - `manifest.json`
 - `versions.json`
 - RSS 请求 User-Agent
+- `README.md`、`README.zh-CN.md`、`CHANGELOG.md` 和对应版本发布说明
 
 发布 ZIP 中只能有：
 

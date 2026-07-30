@@ -19,6 +19,7 @@ import {
   type ItemStatus,
   type RssItem,
 } from "../models/domain";
+import { statusLabel } from "./status-label";
 import { executeUiAction } from "./ui-action";
 
 type Page = "reader" | "feeds" | "analytics";
@@ -28,14 +29,6 @@ interface LastAction {
   fromStatus: ItemStatus;
   label: string;
 }
-
-const STATUS_LABELS: Record<ItemStatus, string> = {
-  unread: t("未读"),
-  interested: t("感兴趣"),
-  archived: t("归档"),
-  hidden: t("已隐藏"),
-  expired: t("已过期"),
-};
 
 const READER_BATCH_SIZE = 100;
 
@@ -218,7 +211,7 @@ export class RssReaderView extends ItemView {
           "aria-pressed": String(this.status === status),
         },
       });
-      button.createSpan({ text: STATUS_LABELS[status] });
+      button.createSpan({ text: statusLabel(status) });
       button.createEl("strong", { text: String(counts[status]) });
       button.addEventListener("click", () => {
         this.status = status;

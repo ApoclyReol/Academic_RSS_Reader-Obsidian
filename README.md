@@ -33,7 +33,15 @@ The endpoint may be rate-limited, unavailable in some regions, or changed upstre
 
 The plugin supports desktop installations only and requires version 1.11.4 or later.
 
-Download `main.js`, `manifest.json`, and `styles.css` from the matching GitHub Release and place them in:
+Academic RSS Reader is available in the community plugin directory. The recommended installation method is:
+
+1. Open **Settings → Community plugins**.
+2. Select **Browse** and search for **Academic RSS Reader**.
+3. Select **Install**, then **Enable**.
+
+### Manual installation
+
+Manual installation is available as a fallback. Download `main.js`, `manifest.json`, and `styles.css` from the matching GitHub Release and place them in:
 
 ```text
 <Vault>/.obsidian/plugins/academic-rss-reader/
@@ -87,15 +95,16 @@ npm run package
 Release builds are generated from version tags in GitHub Actions. The workflow attests the provenance of all three release files before publishing them. A downloaded file can be verified with:
 
 ```bash
-gh attestation verify main.js -R ApoclyReol/rss_reader-obsidian
+gh attestation verify main.js -R ApoclyReol/Academic_RSS_Reader-Obsidian
 ```
 
 ## Documentation
 
 - [Development guide](docs/DEVELOPMENT.md)
+- [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [Security and privacy](SECURITY.md)
 - [Changelog](CHANGELOG.md)
-- [v1.1.0 release notes](docs/V1_1_0_RELEASE.md)
+- [v1.1.1 release notes](docs/V1_1_1_RELEASE.md)
 
 ## License
 
