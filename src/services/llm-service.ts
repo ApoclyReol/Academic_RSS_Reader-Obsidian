@@ -1,6 +1,6 @@
 import { requestUrl } from "obsidian";
 
-import { t, tx } from "../i18n";
+import { t } from "../i18n";
 import type { RssReaderSettings } from "../models/settings";
 import { RssRepository } from "../repositories/rss-repository";
 import type { DatabaseOperationCoordinator } from "./database-operation-coordinator";
@@ -24,12 +24,12 @@ export class LlmService {
     const settings = this.validatedSettings();
     const response = await this.complete(
       settings,
-      t("只回复 high，不要添加其他文字。"),
+      t("ui.reply_with_high_only_do_not_add_any_other_text"),
     );
     if (parseTier(response) !== "high") {
-      throw new Error(t("服务已响应，但没有按要求返回 high"));
+      throw new Error(t("ui.the_service_responded_but_did_not_return_high_as_requested"));
     }
-    return t("连接、认证和模型响应正常");
+    return t("ui.connection_authentication_and_model_response_are_working");
   }
 
   async reviewPending(): Promise<LlmReviewRun> {
@@ -43,15 +43,14 @@ export class LlmService {
           const response = await this.complete(
             settings,
             [
-              t("你正在帮助研究者筛选论文。"),
-              `研究兴趣：${settings.userInterest || t("未补充")}`,
-              tx(`标题：${item.title}`, `Title: ${item.title}`),
-              tx(`摘要：${item.summary}`, `Abstract: ${item.summary}`),
-              tx(
-                `关键词分：${item.keywordScore ?? 50}`,
-                `Keyword score: ${item.keywordScore ?? 50}`,
-              ),
-              t("判断论文是否值得优先阅读。只能返回 high 或 low。"),
+              t("ui.you_are_helping_a_researcher_screen_papers"),
+              `${t("ui.additional_research_interests")}: ${settings.userInterest || t("ui.not_provided")}`,
+              t("dynamic.title", { title: item.title }),
+              t("dynamic.abstract", { abstract: item.summary }),
+              t("dynamic.keyword_score", {
+                score: item.keywordScore ?? 50,
+              }),
+              t("ui.decide_whether_this_paper_deserves_priority_reading_return_high_or_low_o"),
             ].join("\n"),
           );
           const tier = parseTier(response);
@@ -75,7 +74,7 @@ export class LlmService {
   private validatedSettings(): RssReaderSettings {
     const settings = this.getSettings();
     if (!settings.llmBaseUrl || !this.getApiKey() || !settings.llmModel) {
-      throw new Error(t("请先配置 LLM 地址、API Key 和模型"));
+      throw new Error(t("ui.configure_the_llm_endpoint_api_key_and_model_first"));
     }
     return settings;
   }
@@ -103,19 +102,14 @@ export class LlmService {
       throw: false,
     });
     if (response.status < 200 || response.status >= 300) {
-      throw new Error(
-        tx(
-          `LLM 请求失败：HTTP ${response.status}`,
-          `LLM request failed: HTTP ${response.status}`,
-        ),
-      );
+      throw new Error(t("error.llm_http", { status: response.status }));
     }
     const payload = response.json as {
       choices?: Array<{ message?: { content?: string } }>;
     };
     const content = payload.choices?.[0]?.message?.content?.trim();
     if (!content) {
-      throw new Error(t("LLM 返回内容为空"));
+      throw new Error(t("ui.the_llm_returned_an_empty_response"));
     }
     return content;
   }

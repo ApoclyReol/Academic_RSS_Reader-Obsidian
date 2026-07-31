@@ -1,4 +1,5 @@
 import {
+  ButtonComponent,
   ItemView,
   Modal,
   Notice,
@@ -10,7 +11,7 @@ import {
 
 import type RssReaderPlugin from "../main";
 import { RSS_READER_VIEW_TYPE } from "../constants";
-import { t, tx } from "../i18n";
+import { formatDate, formatNumber, t } from "../i18n";
 import {
   ITEM_STATUSES,
   type Feed,
@@ -157,9 +158,9 @@ export class RssReaderView extends ItemView {
 
     const navigation = header.createDiv({ cls: "rss-reader__navigation" });
     for (const [page, label, icon] of [
-      ["reader", t("文献阅读"), "library-big"],
-      ["feeds", t("订阅管理"), "list-plus"],
-      ["analytics", t("兴趣分析"), "chart-column"],
+      ["reader", t("ui.reader"), "library-big"],
+      ["feeds", t("ui.feeds"), "list-plus"],
+      ["analytics", t("ui.interest_analysis"), "chart-column"],
     ] as Array<[Page, string, string]>) {
       const button = navigation.createEl("button", {
         cls: this.page === page ? "mod-cta" : "",
@@ -181,21 +182,20 @@ export class RssReaderView extends ItemView {
     const setup = container.createDiv({
       cls: "rss-reader__empty-state",
     });
-    setup.createEl("h2", { text: t("需要配置数据目录") });
+    setup.createEl("h2", { text: t("ui.a_data_directory_is_required") });
     const message =
       this.plugin.databaseState === "initializing"
-        ? t("正在载入 Academic RSS Reader 数据库……")
+        ? t("ui.loading_the_reader_database")
         : this.plugin.databaseError
-          ? tx(
-              `数据库未载入：${this.plugin.databaseError}`,
-              `Database not loaded: ${this.plugin.databaseError}`,
-            )
-          : t("Academic RSS Reader 不会在插件目录创建数据库。请先到设置中选择当前 Vault 内的数据目录，然后创建或载入数据库。");
+          ? t("error.database_not_loaded", {
+              error: this.plugin.databaseError,
+            })
+          : t("ui.reader_does_not_create_a_database_in_the_plugin_directory_choose_a_data_");
     setup.createEl("p", { text: message });
     if (this.plugin.databaseState !== "initializing") {
       const button = setup.createEl("button", {
         cls: "mod-cta",
-        text: t("打开 academic RSS reader 设置"),
+        text: t("ui.open_reader_settings"),
       });
       button.addEventListener("click", () => this.plugin.openSettings());
     }
@@ -241,17 +241,17 @@ export class RssReaderView extends ItemView {
     const actions = container.createDiv({
       cls: "rss-reader__mode-switch",
     });
-    this.actionButton(actions, t("刷新"), "refresh-cw", () => this.refresh());
+    this.actionButton(actions, t("ui.refresh"), "refresh-cw", () => this.refresh());
     this.actionButton(
       actions,
-      t("撤回"),
+      t("ui.undo"),
       "undo-2",
       async () => this.undoLastAction(),
       !this.lastAction,
     );
     const translateButton = this.actionButton(
       actions,
-      this.translationEnabled ? t("显示原文") : t("翻译标题"),
+      this.translationEnabled ? t("ui.show_original") : t("ui.translate_titles"),
       "languages",
       async () => {
         if (
@@ -284,7 +284,7 @@ export class RssReaderView extends ItemView {
     if (this.readerItems.length === 0) {
       container.createDiv({
         cls: "rss-reader__empty-state",
-        text: t("这个篮子里当前没有文献。"),
+        text: t("ui.there_are_no_papers_in_this_basket"),
       });
     } else {
       this.readerList = container.createDiv({ cls: "rss-reader__list" });
@@ -309,10 +309,11 @@ export class RssReaderView extends ItemView {
         text: item.journal,
       });
     }
+    this.renderKeywordRelevance(card, item);
     const actions = card.createDiv({ cls: "rss-reader__item-actions" });
     this.renderStatusActions(actions, item);
     if (item.link) {
-      this.actionButton(actions, t("打开原文"), "external-link", () => {
+      this.actionButton(actions, t("ui.open_original"), "external-link", () => {
         this.viewWindow()?.open(item.link, "_external");
       });
     }
@@ -326,8 +327,8 @@ export class RssReaderView extends ItemView {
       cls: "rss-reader__load-status",
       text:
         this.readerItems.length >= this.readerMatched
-          ? t("已加载全部文献")
-          : t("继续向下滚动以加载更多"),
+          ? t("ui.all_papers_loaded")
+          : t("ui.scroll_down_to_load_more"),
       attr: {
         role: "status",
         "aria-live": "polite",
@@ -366,7 +367,7 @@ export class RssReaderView extends ItemView {
       return;
     }
     this.loadingMore = true;
-    this.readerSentinel.setText(t("正在加载更多文献……"));
+    this.readerSentinel.setText(t("ui.loading_more_papers"));
     this.readerSentinel.setAttribute("aria-busy", "true");
     try {
       await Promise.resolve();
@@ -393,9 +394,9 @@ export class RssReaderView extends ItemView {
         this.readerItems.length >= this.readerMatched
       ) {
         this.loadMoreObserver?.disconnect();
-        this.readerSentinel.setText(t("已加载全部文献"));
+        this.readerSentinel.setText(t("ui.all_papers_loaded"));
       } else {
-        this.readerSentinel.setText(t("继续向下滚动以加载更多"));
+        this.readerSentinel.setText(t("ui.scroll_down_to_load_more"));
       }
     } finally {
       this.loadingMore = false;
@@ -404,10 +405,10 @@ export class RssReaderView extends ItemView {
   }
 
   private readerCaptionText(): string {
-    return tx(
-      `当前篮子共有 ${this.readerMatched} 条，页面显示 ${this.readerItems.length} 条。`,
-      `${this.readerMatched} papers in this basket; ${this.readerItems.length} shown.`,
-    );
+    return t("reader.basket_count", {
+      total: formatNumber(this.readerMatched),
+      shown: formatNumber(this.readerItems.length),
+    });
   }
 
   private renderTitle(container: HTMLElement, item: RssItem): void {
@@ -417,14 +418,13 @@ export class RssReaderView extends ItemView {
           ? item.translatedTitle
           : item.title,
     });
-    this.renderKeywordRelevance(container, item);
     if (
       this.translationEnabled &&
       item.titleTranslationStatus === "failed"
     ) {
       container.createSpan({
         cls: "rss-reader__translation-status is-error",
-        text: t("翻译失败"),
+        text: t("ui.translation_failed"),
         attr: {
           role: "alert",
         },
@@ -435,7 +435,7 @@ export class RssReaderView extends ItemView {
     ) {
       container.createSpan({
         cls: "rss-reader__translation-status",
-        text: t("等待翻译……"),
+        text: t("ui.waiting_for_translation"),
         attr: {
           role: "status",
           "aria-live": "polite",
@@ -447,7 +447,7 @@ export class RssReaderView extends ItemView {
     ) {
       container.createSpan({
         cls: "rss-reader__translation-status",
-        text: t("正在翻译……"),
+        text: t("ui.translating"),
         attr: {
           role: "status",
           "aria-live": "polite",
@@ -463,28 +463,48 @@ export class RssReaderView extends ItemView {
     if (item.keywordScore === null) {
       return;
     }
-    const tier =
-      item.keywordScore >= 70
-        ? "high"
-        : item.keywordScore <= 30
-          ? "low"
-          : "pending";
+    const relevance = container.createDiv({
+      cls: "rss-reader__item-relevance",
+    });
+    const tier = item.finalTier ?? "pending";
     const label =
       tier === "high"
-        ? t("高相关")
+        ? t("ui.high_relevance")
         : tier === "low"
-          ? t("低相关")
-          : t("待判断");
-    container.createSpan({
+          ? t("ui.low_relevance")
+          : t("ui.pending");
+    relevance.createSpan({
       cls: `rss-reader__keyword-relevance is-${tier}`,
       text: label,
       attr: {
-        "aria-label": tx(
-          `关键词相关度：${label}`,
-          `Keyword relevance: ${label}`,
-        ),
+        "aria-label": t("recommendation.aria", { label }),
       },
     });
+    const explanation = recommendationExplanation(item.matchedKeywords);
+    if (explanation.positive.length > 0) {
+      relevance.createDiv({
+        cls: "rss-reader__caption",
+        text: t("recommendation.positive_terms", {
+          terms: explanation.positive.join(", "),
+        }),
+      });
+    }
+    if (explanation.negative.length > 0) {
+      relevance.createDiv({
+        cls: "rss-reader__caption",
+        text: t("recommendation.negative_terms", {
+          terms: explanation.negative.join(", "),
+        }),
+      });
+    }
+    if (explanation.context.length > 0) {
+      relevance.createDiv({
+        cls: "rss-reader__caption",
+        text: t("recommendation.feature_terms", {
+          terms: explanation.context.join(", "),
+        }),
+      });
+    }
   }
 
   private observeVisibleTitles(
@@ -583,14 +603,14 @@ export class RssReaderView extends ItemView {
     const panel = container.createEl("details", {
       cls: "rss-reader__recommendation",
     });
-    panel.createEl("summary", { text: t("个性化推荐") });
+    panel.createEl("summary", { text: t("ui.personalized_recommendations") });
     const summary = this.plugin.repository.getRecommendationSummary();
     const metrics = panel.createDiv({ cls: "rss-reader__metrics" });
     for (const [label, value] of [
-      [t("高相关"), summary.high],
-      [t("待判断"), summary.pending],
-      [t("低相关"), summary.low],
-      [t("未评分"), summary.unscored],
+      [t("ui.high_relevance"), summary.high],
+      [t("ui.pending"), summary.pending],
+      [t("ui.low_relevance"), summary.low],
+      [t("ui.unscored"), summary.unscored],
     ]) {
       const metric = metrics.createDiv({ cls: "rss-reader__metric" });
       metric.createSpan({ text: String(label) });
@@ -607,26 +627,43 @@ export class RssReaderView extends ItemView {
     } else if (summary.modelVersion) {
       panel.createEl("p", {
         cls: "rss-reader__caption",
-        text: tx(
-          `正样本 ${summary.positiveCount} · 负样本 ${summary.negativeCount} · 建模时未读 ${summary.unreadCount} · ${summary.createdAt ?? ""}`,
-          `Positive ${summary.positiveCount} · Negative ${summary.negativeCount} · Unread at training ${summary.unreadCount} · ${summary.createdAt ?? ""}`,
-        ),
+        text: `${t("recommendation.model_summary", {
+          positive: formatNumber(summary.positiveCount),
+          negative: formatNumber(summary.negativeCount),
+          unread: formatNumber(summary.unreadCount),
+          accuracy:
+            summary.validationAccuracy === null
+              ? "—"
+              : `${formatNumber(summary.validationAccuracy * 100)}%`,
+          low: formatNumber(
+            this.plugin.settings.recommendationLowThreshold ??
+              summary.suggestedLowThreshold,
+          ),
+          high: formatNumber(
+            this.plugin.settings.recommendationHighThreshold ??
+              summary.suggestedHighThreshold,
+          ),
+          updated: summary.createdAt
+            ? formatDate(summary.createdAt)
+            : "",
+        })}${this.plugin.recommendationService.isModelStale()
+          ? t("recommendation.stale")
+          : ""}`,
       });
     }
     const actions = panel.createDiv({ cls: "rss-reader__item-actions" });
-    this.actionButton(actions, t("更新关键词推荐"), "sparkles", async () => {
-      const notice = new Notice(t("正在准备更新关键词推荐……"), 0);
+    this.actionButton(actions, t("ui.update_keyword_recommendations"), "sparkles", async () => {
+      const notice = new Notice(t("ui.preparing_to_update_keyword_recommendations"), 0);
       try {
         await this.yieldToView();
         const result = await this.plugin.recommendationService.rebuild(
           (message) => notice.setMessage(message),
         );
-        notice.setMessage(
-          tx(
-            `推荐已更新：高 ${result.highCount}，待判断 ${result.pendingCount}，低 ${result.lowCount}`,
-            `Recommendations updated: ${result.highCount} high, ${result.pendingCount} pending, ${result.lowCount} low.`,
-          ),
-        );
+        notice.setMessage(t("recommendation.updated", {
+          high: result.highCount,
+          pending: result.pendingCount,
+          low: result.lowCount,
+        }));
       } catch (error) {
         notice.setMessage(
           error instanceof Error ? error.message : String(error),
@@ -636,16 +673,15 @@ export class RssReaderView extends ItemView {
         await this.refresh();
       }
     });
-    this.actionButton(actions, t("LLM 复核待判断"), "bot", async () => {
-      const notice = new Notice(t("正在复核待判断论文……"), 0);
+    this.actionButton(actions, t("ui.review_pending_items_with_llm"), "bot", async () => {
+      const notice = new Notice(t("ui.reviewing_pending_papers"), 0);
       try {
         const result = await this.plugin.llmService.reviewPending();
-        notice.setMessage(
-          tx(
-            `复核完成：高 ${result.high}，低 ${result.low}，失败 ${result.failed}`,
-            `Review completed: ${result.high} high, ${result.low} low, ${result.failed} failed.`,
-          ),
-        );
+        notice.setMessage(t("recommendation.reviewed", {
+          high: result.high,
+          low: result.low,
+          failed: result.failed,
+        }));
       } catch (error) {
         notice.setMessage(
           error instanceof Error ? error.message : String(error),
@@ -655,24 +691,18 @@ export class RssReaderView extends ItemView {
         await this.refresh();
       }
     });
-    this.actionButton(actions, t("关键词词表"), "list-tree", () => {
+    this.actionButton(actions, t("ui.keyword_list"), "list-tree", () => {
       new KeywordModal(this.plugin).open();
     });
     const lowIds = this.plugin.repository.listLowRecommendationIds("", []);
     this.actionButton(
       actions,
-      tx(
-        `隐藏低相关（${lowIds.length}）`,
-        `Hide low relevance (${lowIds.length})`,
-      ),
+      t("recommendation.hide_low", { count: lowIds.length }),
       "eye-off",
       () => {
         new ConfirmModal(
           this.app,
-          tx(
-            `确认隐藏当前未读篮子中的 ${lowIds.length} 条低相关论文？`,
-            `Hide ${lowIds.length} low-relevance papers from the current unread basket?`,
-          ),
+          t("recommendation.hide_confirm", { count: lowIds.length }),
           async () => {
             const changed = await this.plugin.repository.setItemStatus(
               lowIds,
@@ -681,10 +711,7 @@ export class RssReaderView extends ItemView {
             this.lastAction = {
               itemIds: lowIds,
               fromStatus: "unread",
-              label: tx(
-                `${changed} 条低相关论文`,
-                `${changed} low-relevance papers`,
-              ),
+              label: t("recommendation.low_papers", { count: changed }),
             };
             await this.refresh();
           },
@@ -696,15 +723,24 @@ export class RssReaderView extends ItemView {
 
   private renderFeeds(container: HTMLElement): void {
     const actions = container.createDiv({ cls: "rss-reader__toolbar" });
-    this.actionButton(actions, t("添加订阅"), "plus", () => {
+    this.actionButton(actions, t("ui.add_feed"), "plus", () => {
       new FeedModal(this.plugin, null, () => this.refresh()).open();
     });
-    this.actionButton(actions, t("批量导入"), "file-up", () => {
+    this.actionButton(actions, t("ui.bulk_import"), "file-up", () => {
       new FeedImportModal(this.plugin, () => this.refresh()).open();
     });
-    this.actionButton(actions, t("更新全部启用"), "refresh-cw", async () => {
+    this.actionButton(actions, t("ui.update_all_enabled"), "refresh-cw", async () => {
       await this.runFeedUpdate();
     });
+    this.actionButton(
+      actions,
+      t("feed.cancel_update"),
+      "circle-stop",
+      () => {
+        this.plugin.feedService.cancelUpdates();
+      },
+      !this.plugin.feedService.isUpdating(),
+    );
 
     const rawSummary =
       this.plugin.repository.getMetadata("last_update_summary");
@@ -718,10 +754,13 @@ export class RssReaderView extends ItemView {
           : {};
       container.createEl("p", {
         cls: "rss-reader__caption",
-        text: tx(
-          `最后更新：${primitiveText(summary.finishedAt, "")} · 成功 ${primitiveText(summary.successFeeds, "0")}/${primitiveText(summary.totalFeeds, "0")} · 新增 ${primitiveText(summary.totalNewItems, "0")} · 过期整理 ${primitiveText(summary.expiredItems, "0")}`,
-          `Last update: ${primitiveText(summary.finishedAt, "")} · Successful ${primitiveText(summary.successFeeds, "0")}/${primitiveText(summary.totalFeeds, "0")} · New ${primitiveText(summary.totalNewItems, "0")} · Expired ${primitiveText(summary.expiredItems, "0")}`,
-        ),
+        text: t("feed.last_summary", {
+          date: primitiveText(summary.finishedAt, ""),
+          success: primitiveText(summary.successFeeds, "0"),
+          total: primitiveText(summary.totalFeeds, "0"),
+          newItems: primitiveText(summary.totalNewItems, "0"),
+          expired: primitiveText(summary.expiredItems, "0"),
+        }),
       });
     }
 
@@ -729,7 +768,7 @@ export class RssReaderView extends ItemView {
     if (feeds.length === 0) {
       container.createDiv({
         cls: "rss-reader__empty-state",
-        text: t("还没有订阅源。"),
+        text: t("ui.no_feeds_yet"),
       });
       return;
     }
@@ -737,7 +776,17 @@ export class RssReaderView extends ItemView {
       cls: "rss-reader__table",
     });
     const header = table.createEl("thead").createEl("tr");
-    for (const label of [t("名称"), t("启用"), t("条目"), t("最后检查"), t("错误"), t("操作")]) {
+    for (const label of [
+      t("ui.name"),
+      t("ui.enabled"),
+      t("ui.items"),
+      t("ui.last_checked"),
+      t("feed.last_success"),
+      t("feed.health"),
+      t("feed.next_attempt"),
+      t("ui.error"),
+      t("ui.actions"),
+    ]) {
       header.createEl("th", { text: label });
     }
     const body = table.createEl("tbody");
@@ -747,7 +796,7 @@ export class RssReaderView extends ItemView {
       const enabledCell = row.createEl("td");
       new ToggleComponent(enabledCell)
         .setValue(feed.enabled)
-        .setTooltip(feed.enabled ? t("停用订阅") : t("启用订阅"))
+        .setTooltip(feed.enabled ? t("ui.disable_feed") : t("ui.enable_feed"))
         .onChange((enabled) => {
           runUiAction(async () => {
             await this.plugin.feedService.updateFeed(feed.id, {
@@ -759,24 +808,44 @@ export class RssReaderView extends ItemView {
           });
         });
       row.createEl("td", { text: String(feed.itemCount) });
-      row.createEl("td", { text: feed.lastCheckedAt ?? t("尚未更新") });
+      row.createEl("td", {
+        text: feed.lastCheckedAt
+          ? formatDate(feed.lastCheckedAt)
+          : t("ui.never_updated"),
+      });
+      row.createEl("td", {
+        text: feed.lastSuccessAt ? formatDate(feed.lastSuccessAt) : "—",
+      });
+      row.createEl("td", {
+        text:
+          feed.healthStatus === "healthy"
+            ? t("feed.health_healthy")
+            : t(
+                feed.healthStatus === "failing"
+                  ? "feed.health_failing"
+                  : "feed.health_degraded",
+                { count: feed.consecutiveFailures },
+              ),
+      });
+      row.createEl("td", {
+        text: feed.nextAutoUpdateAt
+          ? formatDate(feed.nextAutoUpdateAt)
+          : "—",
+      });
       row.createEl("td", { text: feed.lastError ?? "" });
       const rowActions = row.createEl("td", {
         cls: "rss-reader__table-actions",
       });
-      this.actionButton(rowActions, t("编辑"), "pencil", () => {
+      this.actionButton(rowActions, t("ui.edit"), "pencil", () => {
         new FeedModal(this.plugin, feed, () => this.refresh()).open();
       });
-      this.actionButton(rowActions, t("更新"), "refresh-cw", async () => {
+      this.actionButton(rowActions, t("ui.update"), "refresh-cw", async () => {
         await this.runFeedUpdate([feed.id]);
       });
-      this.actionButton(rowActions, t("删除"), "trash-2", () => {
+      this.actionButton(rowActions, t("ui.delete"), "trash-2", () => {
         new ConfirmModal(
           this.app,
-          tx(
-            `删除订阅“${feed.name}”？仅属于它的文献也会删除，共享文献会保留。`,
-            `Delete the feed “${feed.name}”? Papers unique to it will also be deleted; shared papers will be kept.`,
-          ),
+          t("feed.delete_confirm", { name: feed.name }),
           async () => {
             await this.plugin.repository.deleteFeeds([feed.id]);
             await this.refresh();
@@ -790,12 +859,12 @@ export class RssReaderView extends ItemView {
     const counts = this.plugin.repository.countByStatus();
     const metrics = container.createDiv({ cls: "rss-reader__metrics" });
     for (const [label, value] of [
-      [t("总条目"), counts.total],
-      [t("未读"), counts.unread],
-      [t("隐藏"), counts.hidden],
-      [t("感兴趣"), counts.interested],
-      [t("归档"), counts.archived],
-      [t("过期"), counts.expired],
+      [t("ui.total_items"), counts.total],
+      [t("ui.unread"), counts.unread],
+      [t("ui.hide"), counts.hidden],
+      [t("ui.interested"), counts.interested],
+      [t("ui.archived"), counts.archived],
+      [t("ui.expired_2"), counts.expired],
     ]) {
       const metric = metrics.createDiv({ cls: "rss-reader__metric" });
       metric.createSpan({ text: String(label) });
@@ -803,10 +872,9 @@ export class RssReaderView extends ItemView {
     }
     container.createEl("p", {
       cls: "rss-reader__caption",
-      text: tx(
-        `隐藏文献在订阅更新后按 last_seen_at 整理，当前阈值 ${this.plugin.settings.hiddenExpireDays} 天。`,
-        `Hidden papers are expired by last_seen_at after feed updates. Current threshold: ${this.plugin.settings.hiddenExpireDays} days.`,
-      ),
+      text: t("analytics.expiry", {
+        days: this.plugin.settings.hiddenExpireDays,
+      }),
     });
     const rows: Array<Record<string, unknown> & { rate: number }> =
       this.plugin.repository
@@ -827,15 +895,15 @@ export class RssReaderView extends ItemView {
     });
     const header = table.createEl("thead").createEl("tr");
     for (const label of [
-      t("期刊"),
-      t("启用"),
-      t("总条目"),
-      t("未读"),
-      t("隐藏"),
-      t("感兴趣"),
-      t("归档"),
-      t("过期"),
-      t("感兴趣率"),
+      t("ui.journal"),
+      t("ui.enabled"),
+      t("ui.total_items"),
+      t("ui.unread"),
+      t("ui.hide"),
+      t("ui.interested"),
+      t("ui.archived"),
+      t("ui.expired_2"),
+      t("ui.interest_rate"),
     ]) {
       header.createEl("th", { text: label });
     }
@@ -844,7 +912,7 @@ export class RssReaderView extends ItemView {
       const tr = body.createEl("tr");
       for (const value of [
         row.name,
-        row.enabled ? t("是") : t("否"),
+        row.enabled ? t("ui.yes") : t("ui.no"),
         row.total_count ?? 0,
         row.unread_count ?? 0,
         row.hidden_count ?? 0,
@@ -859,15 +927,26 @@ export class RssReaderView extends ItemView {
   }
 
   private async runFeedUpdate(feedIds?: number[]): Promise<void> {
-    const notice = new Notice(t("正在更新订阅……"), 0);
+    const notice = new Notice(t("ui.updating_feeds"), 0);
     try {
-      const results = await this.plugin.feedService.updateFeeds(feedIds);
-      notice.setMessage(
-        tx(
-          `更新完成：新增 ${results.reduce((sum, result) => sum + result.newItems, 0)}，失败 ${results.filter((result) => result.error).length}`,
-          `Update completed: ${results.reduce((sum, result) => sum + result.newItems, 0)} new items, ${results.filter((result) => result.error).length} failed feeds.`,
+      const update = this.plugin.feedService.updateFeeds(feedIds, {
+        onProgress: ({ completed, total, feedName }) => {
+          notice.setMessage(t("ui.updating_feeds_current_total_feed", {
+            current: completed,
+            total,
+            feed: feedName,
+          }));
+        },
+      });
+      await this.refresh();
+      const results = await update;
+      notice.setMessage(t("feed.update_done", {
+        newItems: results.reduce(
+          (sum, result) => sum + result.newItems,
+          0,
         ),
-      );
+        failed: results.filter((result) => result.error).length,
+      }));
     } catch (error) {
       notice.setMessage(
         error instanceof Error ? error.message : String(error),
@@ -886,12 +965,7 @@ export class RssReaderView extends ItemView {
       this.lastAction.itemIds,
       this.lastAction.fromStatus,
     );
-    new Notice(
-      tx(
-        `已撤回：${this.lastAction.label}`,
-        `Undone: ${this.lastAction.label}`,
-      ),
-    );
+    new Notice(t("action.undone", { label: this.lastAction.label }));
     this.lastAction = null;
     await this.refresh();
   }
@@ -946,17 +1020,17 @@ class GoogleTranslationConsentModal extends Modal {
   }
 
   onOpen(): void {
-    this.setTitle(t("启用实验性标题翻译？"));
+    this.setTitle(t("ui.enable_experimental_title_translation"));
     this.contentEl.createEl("p", {
-      text: t("启用后，当前视口中的文献标题及后续预取标题会直接发送给 Google 非正式网页翻译接口。请求不经过开发者服务器；该接口可能限流、失效，译文不应用于正式引用。"),
+      text: t("ui.when_enabled_titles_in_the_current_viewport_and_prefetched_titles_are_se"),
     });
     new Setting(this.contentEl)
       .addButton((button) =>
-        button.setButtonText(t("取消")).onClick(() => this.finish(false)),
+        button.setButtonText(t("ui.cancel")).onClick(() => this.finish(false)),
       )
       .addButton((button) =>
         button
-          .setButtonText(t("同意并启用"))
+          .setButtonText(t("ui.agree_and_enable"))
           .setCta()
           .onClick(() => this.finish(true)),
       );
@@ -990,32 +1064,32 @@ class FeedModal extends Modal {
   }
 
   onOpen(): void {
-    this.setTitle(this.feed ? t("编辑订阅") : t("添加订阅"));
+    this.setTitle(this.feed ? t("ui.edit_feed") : t("ui.add_feed"));
     let name = this.feed?.name ?? "";
     let url = this.feed?.url ?? "";
     let enabled = this.feed?.enabled ?? true;
     new Setting(this.contentEl)
-      .setName(t("订阅名称"))
+      .setName(t("ui.feed_name"))
       .addText((text) =>
         text.setValue(name).onChange((value) => {
           name = value;
         }),
       );
     new Setting(this.contentEl)
-      .setName("RSS URL")
+      .setName(t("ui.rss_url"))
       .addText((text) =>
         text.setValue(url).onChange((value) => {
           url = value;
         }),
       );
-    new Setting(this.contentEl).setName(t("启用")).addToggle((toggle) =>
+    new Setting(this.contentEl).setName(t("ui.enabled")).addToggle((toggle) =>
       toggle.setValue(enabled).onChange((value) => {
         enabled = value;
       }),
     );
     new Setting(this.contentEl).addButton((button) =>
       button
-        .setButtonText(t("保存"))
+        .setButtonText(t("ui.save"))
         .setCta()
         .onClick(() => {
           runUiAction(async () => {
@@ -1046,9 +1120,9 @@ class FeedImportModal extends Modal {
   }
 
   onOpen(): void {
-    this.setTitle(t("批量导入订阅"));
+    this.setTitle(t("ui.bulk_import_feeds"));
     this.contentEl.createEl("p", {
-      text: t("支持 opml、XML、txt、粘贴内容或逐行 URL。重复 URL 会跳过。"),
+      text: t("ui.supports_opml_xml_txt_pasted_content_or_one_url_per_line_duplicate_urls_"),
     });
     const file = this.contentEl.createEl("input", {
       type: "file",
@@ -1056,7 +1130,7 @@ class FeedImportModal extends Modal {
     });
     const textarea = this.contentEl.createEl("textarea", {
       cls: "rss-reader__import-text",
-      attr: { placeholder: t("粘贴 opml 或 RSS URL") },
+      attr: { placeholder: t("ui.paste_opml_or_rss_urls") },
     });
     const preview = this.contentEl.createDiv();
     preview.setAttribute("role", "status");
@@ -1070,19 +1144,11 @@ class FeedImportModal extends Modal {
       }
       candidates = this.plugin.feedService.parseImportText(content);
       preview.setAttribute("role", "status");
-      preview.setText(
-        tx(
-          `识别到 ${candidates.length} 个候选订阅`,
-          `${candidates.length} feed candidates found.`,
-        ),
-      );
+      preview.setText(t("feed.candidates", { count: candidates.length }));
     };
     const showPreviewError = (error: unknown): void => {
       preview.setText(
-        tx(
-          `预览失败：${errorMessage(error)}`,
-          `Preview failed: ${errorMessage(error)}`,
-        ),
+        t("feed.preview_failed", { error: errorMessage(error) }),
       );
       preview.setAttribute("role", "alert");
     };
@@ -1094,7 +1160,7 @@ class FeedImportModal extends Modal {
     });
     new Setting(this.contentEl)
       .addButton((button) =>
-        button.setButtonText(t("预览")).onClick(() => {
+        button.setButtonText(t("ui.preview")).onClick(() => {
           runUiAction(
             updatePreview,
             button.buttonEl,
@@ -1104,19 +1170,18 @@ class FeedImportModal extends Modal {
       )
       .addButton((button) =>
         button
-          .setButtonText(t("导入"))
+          .setButtonText(t("ui.import"))
           .setCta()
           .onClick(() => {
             runUiAction(async () => {
               await updatePreview();
               const result =
                 await this.plugin.feedService.importFeeds(candidates);
-              new Notice(
-                tx(
-                  `新增 ${result.added}，跳过 ${result.skipped}，失败 ${result.errors.length}`,
-                  `Added ${result.added}, skipped ${result.skipped}, failed ${result.errors.length}.`,
-                ),
-              );
+              new Notice(t("feed.import_done", {
+                added: result.added,
+                skipped: result.skipped,
+                failed: result.errors.length,
+              }));
               this.close();
               await this.onSaved();
             }, button.buttonEl, showPreviewError);
@@ -1131,18 +1196,31 @@ class KeywordModal extends Modal {
   }
 
   onOpen(): void {
-    this.setTitle(t("推荐关键词词表"));
+    this.modalEl.addClass("rss-reader__keyword-modal");
+    this.setTitle(t("ui.recommendation_keywords"));
     this.render();
   }
 
   private render(): void {
     this.contentEl.empty();
+    this.contentEl.createEl("p", {
+      cls: "setting-item-description",
+      text: t("keyword.table_help"),
+    });
     const keywords = this.plugin.repository.listKeywords(100);
     const table = this.contentEl.createEl("table", {
       cls: "rss-reader__table",
     });
     const header = table.createEl("thead").createEl("tr");
-    for (const label of [t("关键词"), t("方向"), t("权重"), t("正样本"), t("负样本"), t("状态")]) {
+    for (const label of [
+      t("ui.keyword"),
+      t("ui.direction"),
+      t("ui.weight"),
+      t("ui.positive_samples"),
+      t("ui.negative_samples"),
+      t("ui.status"),
+      t("ui.actions"),
+    ]) {
       header.createEl("th", { text: label });
     }
     const body = table.createEl("tbody");
@@ -1150,87 +1228,44 @@ class KeywordModal extends Modal {
       const row = body.createEl("tr");
       for (const value of [
         keyword.keyword,
-        keyword.effectiveWeight >= 0 ? t("正向") : t("负向"),
+        keyword.effectiveWeight >= 0 ? t("ui.positive") : t("ui.negative"),
         keyword.effectiveWeight.toFixed(3),
         keyword.positiveCount,
         keyword.negativeCount,
         keyword.isDisabled
-          ? t("已禁用")
-          : keyword.manualWeight !== null
-            ? t("人工")
-            : t("自动"),
+          ? t("ui.disabled")
+          : t("ui.automatic"),
       ]) {
         row.createEl("td", { text: String(value) });
       }
-    }
-    let keyword = "";
-    let direction: "positive" | "negative" = "positive";
-    let weight = 1;
-    let disabled = false;
-    new Setting(this.contentEl)
-      .setName(t("关键词"))
-      .addText((text) =>
-        text.onChange((value) => {
-          keyword = value.trim().toLocaleLowerCase();
-        }),
-      );
-    new Setting(this.contentEl)
-      .setName(t("人工方向"))
-      .addDropdown((dropdown) =>
-        dropdown
-          .addOption("positive", t("正向"))
-          .addOption("negative", t("负向"))
-          .onChange((value) => {
-            direction = value as "positive" | "negative";
-          }),
-      );
-    new Setting(this.contentEl)
-      .setName(t("人工权重"))
-      .addText((text) =>
-        text.setValue("1").onChange((value) => {
-          weight = Math.max(0.1, Math.min(5, Number(value) || 1));
-        }),
-      );
-    new Setting(this.contentEl)
-      .setName(t("禁用"))
-      .addToggle((toggle) =>
-        toggle.onChange((value) => {
-          disabled = value;
-        }),
-      );
-    new Setting(this.contentEl)
-      .addButton((button) =>
-        button
-          .setButtonText(t("保存修正"))
-          .setCta()
-          .onClick(() => {
-            runUiAction(async () => {
-              if (!keyword) {
-                new Notice(t("请输入关键词"));
-                return;
-              }
-              await this.plugin.repository.saveKeywordOverride(
-                keyword,
-                direction,
-                weight,
-                disabled,
-              );
-              this.render();
-            }, button.buttonEl);
-          }),
-      )
-      .addButton((button) =>
-        button.setButtonText(t("恢复自动权重")).onClick(() => {
+      const actions = row.createEl("td", {
+        cls: "rss-reader__table-actions",
+      });
+      const toggle = new ButtonComponent(actions)
+        .setButtonText(
+          keyword.isDisabled
+            ? t("keyword.enable")
+            : t("keyword.disable"),
+        )
+        .onClick(() => {
           runUiAction(async () => {
-            if (!keyword) {
-              new Notice(t("请输入关键词"));
-              return;
-            }
-            await this.plugin.repository.resetKeywordOverride(keyword);
+            await this.plugin.repository.setKeywordDisabled(
+              keyword.keyword,
+              !keyword.isDisabled,
+            );
             this.render();
-          }, button.buttonEl);
-        }),
+          }, toggle.buttonEl);
+        });
+      toggle.buttonEl.setAttribute(
+        "aria-pressed",
+        keyword.isDisabled ? "true" : "false",
       );
+      toggle.buttonEl.addClass(
+        keyword.isDisabled
+          ? "rss-reader__keyword-enable"
+          : "rss-reader__keyword-disable",
+      );
+    }
   }
 }
 
@@ -1244,15 +1279,15 @@ class ConfirmModal extends Modal {
   }
 
   onOpen(): void {
-    this.setTitle(t("请确认"));
+    this.setTitle(t("ui.confirm"));
     this.contentEl.createEl("p", { text: this.message });
     new Setting(this.contentEl)
       .addButton((button) =>
-        button.setButtonText(t("取消")).onClick(() => this.close()),
+        button.setButtonText(t("ui.cancel")).onClick(() => this.close()),
       )
       .addButton((button) =>
         button
-          .setButtonText(t("确认"))
+          .setButtonText(t("ui.confirm_2"))
           .setClass("mod-warning")
           .onClick(() => {
             runUiAction(async () => {
@@ -1270,23 +1305,23 @@ function transitionsFor(
   switch (status) {
     case "unread":
       return [
-        [t("感兴趣"), "interested"],
-        [t("隐藏"), "hidden"],
+        [t("ui.interested"), "interested"],
+        [t("ui.hide"), "hidden"],
       ];
     case "interested":
       return [
-        [t("归档"), "archived"],
-        [t("恢复未读"), "unread"],
-        [t("隐藏"), "hidden"],
+        [t("ui.archived"), "archived"],
+        [t("ui.restore_to_unread"), "unread"],
+        [t("ui.hide"), "hidden"],
       ];
     case "archived":
       return [
-        [t("恢复兴趣"), "interested"],
-        [t("隐藏"), "hidden"],
+        [t("ui.restore_to_interested"), "interested"],
+        [t("ui.hide"), "hidden"],
       ];
     case "hidden":
     case "expired":
-      return [[t("恢复未读"), "unread"]];
+      return [[t("ui.restore_to_unread"), "unread"]];
   }
 }
 
@@ -1312,6 +1347,43 @@ function primitiveText(value: unknown, fallback: string): string {
   return typeof value === "string" || typeof value === "number"
     ? String(value)
     : fallback;
+}
+
+function recommendationExplanation(value: string): {
+  positive: string[];
+  negative: string[];
+  context: string[];
+} {
+  const parsed = safeJson(value);
+  const record =
+    parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  const terms = (key: string): string[] =>
+    Array.isArray(record[key])
+      ? record[key]
+          .filter(
+            (entry): entry is { keyword: string } =>
+              Boolean(
+                entry &&
+                typeof entry === "object" &&
+                "keyword" in entry &&
+                typeof (entry as { keyword?: unknown }).keyword ===
+                  "string",
+              ),
+          )
+          .map((entry) => entry.keyword)
+      : [];
+  const positive = terms("positive");
+  const negative = terms("negative");
+  const context = [...positive, ...negative].filter((term) =>
+    /^(?:author|journal|feed|freshness):/.test(term),
+  );
+  return {
+    positive: positive.filter((term) => !context.includes(term)).slice(0, 3),
+    negative: negative.filter((term) => !context.includes(term)).slice(0, 3),
+    context: context.slice(0, 3),
+  };
 }
 
 function runUiAction(

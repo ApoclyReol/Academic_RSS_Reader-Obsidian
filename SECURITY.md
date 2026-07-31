@@ -13,6 +13,10 @@ Academic RSS Reader 是本地桌面插件，不提供开发者中转服务器，
 
 订阅、文献、状态、译文和推荐结果保存在用户明确选择的 Vault 数据目录中的 SQLite 数据库。设置保存在插件目录的本地 `data.json`，保护性备份保存在用户数据目录的 `backups/`。
 
+推荐特征提取、稀疏模型训练、留出验证和增量评分均在本机执行。只有用户主动执行 LLM 复核时，相关内容才会发送到用户配置的服务。
+
+RSS 请求会发送插件 User-Agent 和缓存验证头，并保存源站返回的 ETag 与 Last-Modified。调度器限制全局及同域并发，并在连续失败后降低自动请求频率。取消或超时会忽略迟到响应；受 Obsidian `requestUrl()` 限制，不能物理中断已经发出的请求。
+
 LLM API Key 由 Obsidian SecretStorage 保存，插件的 `data.json` 只记录所选 SecretStorage 条目名称。从 v1.0.1 或更早版本升级时，插件会把旧 `llmApiKey` 迁入 SecretStorage，并从 `data.json` 删除明文。API Key：
 
 - 不写入日志或迁移报告

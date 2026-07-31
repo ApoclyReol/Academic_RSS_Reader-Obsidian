@@ -7,7 +7,7 @@ import {
 } from "obsidian";
 
 import type RssReaderPlugin from "../main";
-import { t, tx } from "../i18n";
+import { t } from "../i18n";
 import { DirectorySuggest } from "./directory-suggest";
 
 const DATABASE_FILE_NAME = ["rss", "reader.sqlite3"].join("-");
@@ -26,18 +26,18 @@ export class RssReaderSettingTab extends PluginSettingTab {
     containerEl.empty();
     containerEl.addClass("academic-rss-reader-settings");
 
-    new Setting(containerEl).setName(t("数据库存储")).setHeading();
+    new Setting(containerEl).setName(t("ui.database_storage")).setHeading();
     const storageDescription = containerEl.createEl("p", {
       cls: "setting-item-description",
     });
     storageDescription.appendText(
-      t("请选择当前 vault 内的数据目录。运行数据库保存为 "),
+      t("ui.choose_a_data_directory_inside_the_current_vault_the_active_database_is_"),
     );
     storageDescription.createEl("code", {
       text: DATABASE_FILE_NAME,
     });
     storageDescription.appendText(
-      t("，所有保护性备份保存在 backups 子目录。"),
+      t("ui.and_all_protective_backups_are_stored_in_the_backups_subdirectory"),
     );
     let dataDirectory = this.plugin.settings.dataDirectory;
     const inspection = containerEl.createEl("p", {
@@ -49,8 +49,8 @@ export class RssReaderSettingTab extends PluginSettingTab {
       },
     });
     const databaseSetting = new Setting(containerEl)
-      .setName(t("Academic RSS reader 数据目录"))
-      .setDesc(t("输入相对于 vault 根目录的路径；输入本身不会创建或载入数据库。"))
+      .setName(t("ui.reader_data_directory"))
+      .setDesc(t("ui.enter_a_path_relative_to_the_vault_root_entering_a_path_does_not_create_"))
       .addText((text) => {
         text
           .setPlaceholder("Assets/RSS reader data")
@@ -75,7 +75,7 @@ export class RssReaderSettingTab extends PluginSettingTab {
     if (this.plugin.isDatabaseReady()) {
       databaseSetting
         .addButton((button) =>
-          button.setButtonText(t("迁移当前库")).onClick(() => {
+          button.setButtonText(t("ui.migrate_current_database")).onClick(() => {
             this.runButtonAction(button.buttonEl, () =>
               this.runDatabaseAction(() =>
                 this.plugin.switchDataDirectory(dataDirectory, "migrate"),
@@ -84,7 +84,7 @@ export class RssReaderSettingTab extends PluginSettingTab {
           }),
         )
         .addButton((button) =>
-          button.setButtonText(t("载入目标库")).onClick(() => {
+          button.setButtonText(t("ui.load_target_database")).onClick(() => {
             this.runButtonAction(button.buttonEl, () =>
               this.runDatabaseAction(() =>
                 this.plugin.switchDataDirectory(dataDirectory, "load"),
@@ -95,7 +95,7 @@ export class RssReaderSettingTab extends PluginSettingTab {
     } else {
       databaseSetting
         .addButton((button) =>
-          button.setButtonText(t("创建新数据库")).onClick(() => {
+          button.setButtonText(t("ui.create_new_database")).onClick(() => {
             this.runButtonAction(button.buttonEl, () =>
               this.runDatabaseAction(() =>
                 this.plugin.createDatabase(dataDirectory),
@@ -105,7 +105,7 @@ export class RssReaderSettingTab extends PluginSettingTab {
         )
         .addButton((button) =>
           button
-            .setButtonText(t("载入数据库"))
+            .setButtonText(t("ui.load_database"))
             .setCta()
             .onClick(() => {
               this.runButtonAction(button.buttonEl, () =>
@@ -118,42 +118,30 @@ export class RssReaderSettingTab extends PluginSettingTab {
     }
     databaseSetting.descEl.createEl("br");
     databaseSetting.descEl.createSpan({
-      text: t("已有有效数据库时使用载入；没有数据库时使用创建。切换和迁移不会覆盖目标文件。"),
+      text: t("ui.load_an_existing_valid_database_or_create_one_when_none_exists_switching"),
     });
     if (this.plugin.isDatabaseReady()) {
       new Setting(containerEl)
-        .setName(t("当前正在使用"))
+        .setName(t("ui.currently_in_use"))
         .setDesc(this.plugin.getCurrentDatabasePath() ?? "");
       new Setting(containerEl)
-        .setName(t("数据库保护"))
-        .setDesc(t("备份文件保存在当前数据目录的 backups 子目录。"))
+        .setName(t("ui.database_protection"))
+        .setDesc(t("ui.backups_are_stored_in_the_backups_subdirectory_of_the_current_data_direc"))
         .addButton((button) =>
-          button.setButtonText(t("立即备份")).onClick(() => {
+          button.setButtonText(t("ui.back_up_now")).onClick(() => {
             this.runButtonAction(button.buttonEl, async () => {
               const destination =
                 await this.plugin.createManualBackup();
-              new Notice(
-                tx(
-                  `数据库已备份到 ${destination}`,
-                  `Database backed up to ${destination}.`,
-                ),
-                10_000,
-              );
+              new Notice(t("database.backed_up", { destination }), 10_000);
             });
           }),
         )
         .addButton((button) =>
-          button.setButtonText(t("恢复最近备份")).onClick(() => {
+          button.setButtonText(t("ui.restore_latest_backup")).onClick(() => {
             this.runButtonAction(button.buttonEl, async () => {
               const source =
                 await this.plugin.restoreLatestDatabaseBackup();
-              new Notice(
-                tx(
-                  `已从 ${source} 恢复数据库；恢复前已自动备份。`,
-                  `Database restored from ${source}. A backup was created automatically before restoration.`,
-                ),
-                10_000,
-              );
+              new Notice(t("database.restored", { source }), 10_000);
             });
           }),
         );
@@ -161,20 +149,19 @@ export class RssReaderSettingTab extends PluginSettingTab {
     if (this.plugin.databaseError) {
       containerEl.createEl("p", {
         cls: "rss-reader__warning",
-        text: tx(
-          `数据库未载入，原文件未修改。错误：${this.plugin.databaseError}`,
-          `The database was not loaded and the original file was not modified. Error: ${this.plugin.databaseError}`,
-        ),
+        text: t("database.load_error", {
+          error: this.plugin.databaseError,
+        }),
         attr: {
           role: "alert",
         },
       });
     }
 
-    new Setting(containerEl).setName(t("订阅更新")).setHeading();
+    new Setting(containerEl).setName(t("ui.feed_updates")).setHeading();
     new Setting(containerEl)
-      .setName(t("打开阅读器时自动更新"))
-      .setDesc(t("每次启动 Obsidian 后，首次打开 academic RSS reader 时在后台静默更新全部启用订阅。"))
+      .setName(t("ui.update_automatically_when_opening_the_reader"))
+      .setDesc(t("ui.after_each_app_launch_silently_update_all_enabled_feeds_in_the_backgroun"))
       .addToggle((toggle) =>
         toggle
           .setValue(this.plugin.settings.autoUpdateOnStartup)
@@ -184,8 +171,8 @@ export class RssReaderSettingTab extends PluginSettingTab {
           }),
       );
     new Setting(containerEl)
-      .setName(t("隐藏过期天数"))
-      .setDesc(t("隐藏条目超过此天数后，在下一次订阅更新时转为已过期。"))
+      .setName(t("ui.days_before_hidden_items_expire"))
+      .setDesc(t("ui.hidden_items_older_than_this_many_days_become_expired_during_the_next_fe"))
       .addText((text) =>
         text
           .setValue(String(this.plugin.settings.hiddenExpireDays))
@@ -198,27 +185,27 @@ export class RssReaderSettingTab extends PluginSettingTab {
           }),
       );
 
-    new Setting(containerEl).setName(t("实验性网页翻译")).setHeading();
+    new Setting(containerEl).setName(t("ui.experimental_web_translation")).setHeading();
     containerEl.createEl("p", {
       cls: "setting-item-description",
-      text: t("使用 Google 非正式免密网页接口。接口可能限流或失效，译文不保证专业术语准确，不应用于正式引用。文本由本机直接发送，不经过开发者服务器。"),
+      text: t("ui.uses_an_unofficial_google_web_endpoint_without_authentication_it_may_be_"),
     });
     new Setting(containerEl)
-      .setName(t("目标语言"))
-      .setDesc(t("默认并推荐简体中文。"))
+      .setName(t("ui.target_language"))
+      .setDesc(t("ui.simplified_chinese_is_the_default_and_recommended_target"))
       .addDropdown((dropdown) =>
         dropdown
-          .addOption("zh-CN", t("简体中文"))
-          .addOption("en", "English")
+          .addOption("zh-CN", t("ui.simplified_chinese"))
+        .addOption("en", t("ui.english"))
           .setValue(this.plugin.settings.targetLanguage)
           .onChange((value) => {
             this.plugin.settings.targetLanguage = value;
             this.runAsync(() => this.plugin.saveSettings());
           }),
       );
-    new Setting(containerEl).setName(t("LLM 推荐复核")).setHeading();
+    new Setting(containerEl).setName(t("ui.llm_recommendation_review")).setHeading();
     new Setting(containerEl)
-      .setName(t("API 地址"))
+      .setName(t("ui.api_endpoint"))
       .addText((text) =>
         text
           .setPlaceholder("HTTPS://api.OpenAI.com/v1")
@@ -229,8 +216,8 @@ export class RssReaderSettingTab extends PluginSettingTab {
           }),
       );
     new Setting(containerEl)
-      .setName("API key")
-      .setDesc(t("选择或创建 Obsidian SecretStorage 条目；data.json 只保存条目名称。"))
+      .setName(t("ui.api_key"))
+      .setDesc(t("ui.select_or_create_a_secretstorage_entry_data_json_stores_only_the_entry_n"))
       .addComponent((container) =>
         new SecretComponent(this.app, container)
           .setValue(this.plugin.settings.llmSecretId)
@@ -240,7 +227,7 @@ export class RssReaderSettingTab extends PluginSettingTab {
           }),
       );
     new Setting(containerEl)
-      .setName(t("模型"))
+      .setName(t("ui.model"))
       .addText((text) =>
         text
           .setPlaceholder("GPT-4.1-mini")
@@ -251,7 +238,7 @@ export class RssReaderSettingTab extends PluginSettingTab {
           }),
       );
     new Setting(containerEl)
-      .setName(t("研究兴趣补充描述"))
+      .setName(t("ui.additional_research_interests"))
       .addTextArea((text) =>
         text
           .setValue(this.plugin.settings.userInterest)
@@ -261,12 +248,44 @@ export class RssReaderSettingTab extends PluginSettingTab {
           }),
       );
     new Setting(containerEl)
-      .setName(t("测试连接"))
+      .setName(t("ui.low_recommendation_threshold"))
+      .setDesc(t("ui.leave_blank_to_use_the_model_suggestion"))
+      .addText((text) =>
+        text
+          .setPlaceholder("30")
+          .setValue(
+            this.plugin.settings.recommendationLowThreshold?.toString() ??
+              "",
+          )
+          .onChange((value) => {
+            this.plugin.settings.recommendationLowThreshold =
+              thresholdOrNull(value);
+            this.runAsync(() => this.plugin.saveSettings());
+          }),
+      );
+    new Setting(containerEl)
+      .setName(t("ui.high_recommendation_threshold"))
+      .setDesc(t("ui.leave_blank_to_use_the_model_suggestion"))
+      .addText((text) =>
+        text
+          .setPlaceholder("70")
+          .setValue(
+            this.plugin.settings.recommendationHighThreshold?.toString() ??
+              "",
+          )
+          .onChange((value) => {
+            this.plugin.settings.recommendationHighThreshold =
+              thresholdOrNull(value);
+            this.runAsync(() => this.plugin.saveSettings());
+          }),
+      );
+    new Setting(containerEl)
+      .setName(t("ui.test_connection"))
       .addButton((button) =>
-        button.setButtonText(t("测试")).onClick(() => {
+        button.setButtonText(t("ui.test")).onClick(() => {
           this.runButtonAction(button.buttonEl, async () => {
             if (!this.plugin.isDatabaseReady()) {
-              throw new Error(t("请先配置并载入数据库"));
+              throw new Error(t("ui.configure_and_load_a_database_first"));
             }
             new Notice(await this.plugin.llmService.testConnection());
           });
@@ -277,32 +296,36 @@ export class RssReaderSettingTab extends PluginSettingTab {
 
   private databaseStatusText(): string {
     if (this.plugin.databaseState === "ready") {
-      return t("数据库已就绪。输入其他目录后可迁移当前库或载入目标库。");
+      return t("ui.the_database_is_ready_enter_another_directory_to_migrate_the_current_dat");
     }
     if (this.plugin.databaseState === "initializing") {
-      return t("正在初始化数据库……");
+      return t("ui.initializing_database");
     }
     if (this.plugin.databaseState === "error") {
-      return `数据库载入失败：${this.plugin.databaseError ?? t("未知错误")}`;
+      return t("database.load_failed", {
+        error: this.plugin.databaseError ?? t("ui.unknown_error"),
+      });
     }
     return this.plugin.settings.dataDirectory
-      ? t("已保存数据目录；打开 Academic RSS Reader 时会尝试载入其中的数据库。")
-      : t("尚未配置数据目录。");
+      ? t("ui.the_data_directory_is_saved_reader_will_try_to_load_its_database_when_op")
+      : t("ui.no_data_directory_is_configured");
   }
 
   private async inspectDirectoryText(directory: string): Promise<string> {
     if (!directory.trim()) {
-      return t("请输入当前 Vault 内的数据目录。");
+      return t("ui.enter_a_data_directory_inside_the_current_vault");
     }
     try {
       const result = await this.plugin.inspectDataDirectory(directory);
       if (!result.exists) {
-        return t("目录中没有数据库，可以创建新数据库。");
+        return t("ui.this_directory_has_no_database_you_can_create_a_new_one");
       }
       if (result.valid) {
-        return t("发现有效的 rss-reader.sqlite3，可以载入。");
+        return t("ui.a_valid_rss_reader_sqlite3_was_found_and_can_be_loaded");
       }
-      return `发现数据库文件，但校验失败：${result.error ?? t("未知错误")}`;
+      return t("database.validation_failed", {
+        error: result.error ?? t("ui.unknown_error"),
+      });
     } catch (error) {
       return error instanceof Error ? error.message : String(error);
     }
@@ -326,7 +349,7 @@ export class RssReaderSettingTab extends PluginSettingTab {
   ): Promise<void> {
     try {
       await action();
-      new Notice(t("数据库操作完成"));
+      new Notice(t("ui.database_operation_completed"));
       this.redisplay();
     } catch (error) {
       this.showError(error);
@@ -368,4 +391,14 @@ export class RssReaderSettingTab extends PluginSettingTab {
     );
   }
 
+}
+
+function thresholdOrNull(value: string): number | null {
+  if (value.trim() === "") {
+    return null;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed)
+    ? Math.max(0, Math.min(100, parsed))
+    : null;
 }

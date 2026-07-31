@@ -23,6 +23,85 @@ describe("database and repository", () => {
 
   afterEach(() => database.close());
 
+  it("applies ordered schema migrations for feeds and models", () => {
+    const versions = database.query<{ version: number }>(
+      "SELECT version FROM schema_migrations ORDER BY version",
+    );
+    expect(versions.map((row) => row.version)).toEqual([1, 2, 3]);
+    const feedColumns = database.query<{ name: string }>(
+      "PRAGMA table_info(feeds)",
+    );
+    expect(feedColumns.map((row) => row.name)).toContain("etag");
+    const modelColumns = database.query<{ name: string }>(
+      "PRAGMA table_info(recommendation_models)",
+    );
+    expect(modelColumns.map((row) => row.name)).toContain(
+      "training_hash",
+    );
+  });
+
+  it("preserves disabled keywords across model replacement", async () => {
+    await repository.replaceRecommendationResults({
+      modelVersion: "model-before-disable",
+      positiveCount: 2,
+      negativeCount: 2,
+      unreadCount: 0,
+      errorMessage: null,
+      keywords: [{
+        keyword: "libraries",
+        autoWeight: 1.5,
+        positiveCount: 2,
+        negativeCount: 0,
+        idf: 1,
+      }],
+      scores: [],
+    });
+    await repository.setKeywordDisabled("libraries", true);
+    await repository.replaceRecommendationResults({
+      modelVersion: "model-after-disable",
+      positiveCount: 2,
+      negativeCount: 2,
+      unreadCount: 0,
+      errorMessage: null,
+      keywords: [],
+      scores: [],
+    });
+    const keyword = repository.listKeywords().find(
+      (entry) => entry.keyword === "libraries",
+    );
+    expect(keyword?.isDisabled).toBe(true);
+    expect(keyword?.effectiveWeight).toBe(0);
+  });
+
+  it("removes stale automatic keywords when replacing a model", async () => {
+    const replace = async (
+      version: string,
+      keyword: string,
+    ): Promise<void> =>
+      repository.replaceRecommendationResults({
+        modelVersion: version,
+        positiveCount: 2,
+        negativeCount: 2,
+        unreadCount: 0,
+        errorMessage: null,
+        keywords: [{
+          keyword,
+          autoWeight: 1,
+          positiveCount: 2,
+          negativeCount: 0,
+          idf: 1,
+        }],
+        scores: [],
+      });
+    await replace("model-one", "old-term");
+    await replace("model-two", "new-term");
+    const keywords = repository.listKeywords().map(
+      (entry) => entry.keyword,
+    );
+    expect(keywords).toContain("new-term");
+    expect(keywords).not.toContain("old-term");
+  });
+
   it("stores feeds, items, shared links and recoverable statuses", async () => {
     const feedId = await repository.addFeed({
       name: "Journal",

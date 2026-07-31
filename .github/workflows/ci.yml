@@ -29,6 +29,9 @@ jobs:
       - name: Lint
         run: npm run lint -- --max-warnings=0
 
+      - name: Check localization
+        run: npm run check:i18n
+
       - name: Test
         run: npm test
 

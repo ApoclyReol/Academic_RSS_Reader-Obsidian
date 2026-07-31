@@ -4,6 +4,8 @@
 
 Academic RSS Reader is a desktop plugin for screening academic literature from RSS and Atom feeds. It stores subscriptions, reading states, translations, recommendation data, and interest analysis locally without a Python sidecar.
 
+Version 1.2.0 adds stable-key English/Chinese localization, sparse recommendation training in a Web Worker, validation-based adjustable thresholds, and cache-aware concurrent feed updates.
+
 ## Features
 
 - Add, edit, enable, disable, and delete feeds.
@@ -13,7 +15,7 @@ Academic RSS Reader is a desktop plugin for screening academic literature from R
 - Keep stable GUIDs, normalized titles, layered deduplication, cross-feed associations, and existing reading states.
 - Organize papers into unread, interested, archived, hidden, and expired baskets.
 - Load papers continuously in batches of 100, open links in the system browser, and undo state changes during the current session.
-- Rank unread papers with TypeScript TF-IDF and logistic regression, manual keywords, and an optional OpenAI-compatible LLM review.
+- Rank unread papers with TypeScript TF-IDF and logistic regression, user-managed stopwords, and an optional OpenAI-compatible LLM review.
 - Translate visible titles and analyze interests overall or by feed.
 - Match the interface language to the app: Chinese locales use Simplified Chinese, while English and all other locales use English.
 
@@ -26,6 +28,11 @@ Title translation uses an unofficial, unauthenticated Google web endpoint.
 - Translations are cached in the local SQLite database.
 - Feed updates do not wait for translation.
 - Translation failures do not interrupt feeds, reading, recommendations, or analysis.
+- Interface language follows Obsidian and is independent of the content translation target.
+- Recommendation training stays local. It uses sparse text, author, journal, feed, and freshness features; only an explicitly requested LLM review sends paper content to the configured service.
+- The keyword table supports per-term stopword/enable controls. Built-in stopwords, corpus-frequency filtering, and conservative class-neutral filtering reduce noisy terms; user-disabled terms remain disabled across model rebuilds.
+- Keyword recommendations are refreshed automatically after every feed-update batch. An unchanged training hash reuses the model and scores only new or changed unread papers.
+- Feed updates use ETag/Last-Modified validation, four global requests with one request per host, a 20-second scheduler timeout, Retry-After, cancellation, and automatic failure backoff.
 
 The endpoint may be rate-limited, unavailable in some regions, or changed upstream. Translations may be inaccurate and should not be used as formal citations. Titles are sent directly from the user's device to the translation service and do not pass through a developer-operated server.
 
@@ -115,7 +122,7 @@ gh attestation verify main.js -R ApoclyReol/Academic_RSS_Reader-Obsidian
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [Security and privacy](SECURITY.md)
 - [Changelog](CHANGELOG.md)
-- [v1.1.1 release notes](docs/V1_1_1_RELEASE.md)
+- [v1.2.0 release notes](docs/V1_2_0_RELEASE.md)
 
 ## License
 

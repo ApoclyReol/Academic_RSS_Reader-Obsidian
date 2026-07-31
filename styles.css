@@ -159,10 +159,13 @@
 }
 
 .rss-reader__keyword-relevance {
-  flex: 0 0 auto;
   font-size: var(--font-ui-smaller);
   font-weight: var(--font-semibold);
   white-space: nowrap;
+}
+
+.rss-reader__item-relevance {
+  margin-top: var(--size-4-1);
 }
 
 .rss-reader__keyword-relevance.is-high {
@@ -262,6 +265,31 @@
 
 .rss-reader__table-actions button {
   padding: var(--size-2-2);
+}
+
+.rss-reader__keyword-modal {
+  max-width: min(92vw, 64rem);
+  width: fit-content;
+}
+
+.rss-reader__keyword-modal .rss-reader__table th,
+.rss-reader__keyword-modal .rss-reader__table td {
+  white-space: nowrap;
+}
+
+.rss-reader__keyword-modal .rss-reader__table-actions button {
+  min-width: 5.5rem;
+  white-space: nowrap;
+}
+
+.rss-reader__keyword-modal .rss-reader__keyword-enable {
+  border-color: var(--text-success);
+  color: var(--text-success);
+}
+
+.rss-reader__keyword-modal .rss-reader__keyword-disable {
+  border-color: var(--text-error);
+  color: var(--text-error);
 }
 
 .rss-reader__import-text {

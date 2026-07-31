@@ -24,6 +24,12 @@ export interface Feed {
   updatedAt: string;
   lastCheckedAt: string | null;
   lastError: string | null;
+  etag: string | null;
+  lastModified: string | null;
+  lastSuccessAt: string | null;
+  consecutiveFailures: number;
+  healthStatus: "healthy" | "degraded" | "failing";
+  nextAutoUpdateAt: string | null;
   itemCount: number;
 }
 
@@ -40,6 +46,7 @@ export interface RssItem {
   titleNorm: string;
   authors: string;
   journal: string;
+  feedNames: string;
   year: string;
   doi: string;
   link: string;
@@ -102,6 +109,8 @@ export interface UpdateResult {
   newItems: number;
   duplicateHits: number;
   newFeedLinks: number;
+  notModified: boolean;
+  cancelled: boolean;
   error: string | null;
 }
 
@@ -115,16 +124,24 @@ export interface RecommendationSummary {
   negativeCount: number;
   unreadCount: number;
   createdAt: string | null;
+  intercept: number;
+  trainingHash: string | null;
+  validationAccuracy: number | null;
+  suggestedLowThreshold: number;
+  suggestedHighThreshold: number;
+  activeLowThreshold: number;
+  activeHighThreshold: number;
+  featureVersion: number;
+  isStale: boolean;
   errorMessage: string | null;
 }
 
 export interface KeywordRecord {
   keyword: string;
+  idf: number;
   autoWeight: number;
   positiveCount: number;
   negativeCount: number;
-  manualDirection: "positive" | "negative" | null;
-  manualWeight: number | null;
   isDisabled: boolean;
   effectiveWeight: number;
 }

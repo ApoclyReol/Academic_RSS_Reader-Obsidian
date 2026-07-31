@@ -8,6 +8,8 @@ export interface RssReaderSettings {
   llmSecretId: string;
   llmModel: string;
   userInterest: string;
+  recommendationLowThreshold: number | null;
+  recommendationHighThreshold: number | null;
 }
 
 export const DEFAULT_SETTINGS: RssReaderSettings = {
@@ -20,4 +22,6 @@ export const DEFAULT_SETTINGS: RssReaderSettings = {
   llmSecretId: "",
   llmModel: "",
   userInterest: "",
+  recommendationLowThreshold: null,
+  recommendationHighThreshold: null,
 };

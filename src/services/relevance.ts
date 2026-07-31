@@ -5,5 +5,5 @@ export function parseTier(value: string): "high" | "low" {
   if (normalized === "high" || normalized === "low") {
     return normalized;
   }
-  throw new Error(t("LLM 必须严格返回 high 或 low"));
+  throw new Error(t("ui.the_llm_must_return_exactly_high_or_low"));
 }

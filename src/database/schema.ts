@@ -1,4 +1,35 @@
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 3;
+
+export interface SchemaMigration {
+  version: number;
+  statements: readonly string[];
+}
+
+export const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
+  {
+    version: 2,
+    statements: [
+      "ALTER TABLE feeds ADD COLUMN etag TEXT",
+      "ALTER TABLE feeds ADD COLUMN last_modified TEXT",
+      "ALTER TABLE feeds ADD COLUMN last_success_at TEXT",
+      "ALTER TABLE feeds ADD COLUMN consecutive_failures INTEGER NOT NULL DEFAULT 0",
+      "ALTER TABLE feeds ADD COLUMN health_status TEXT NOT NULL DEFAULT 'healthy'",
+      "ALTER TABLE feeds ADD COLUMN next_auto_update_at TEXT",
+    ],
+  },
+  {
+    version: 3,
+    statements: [
+      "ALTER TABLE recommendation_models ADD COLUMN intercept REAL NOT NULL DEFAULT 0",
+      "ALTER TABLE recommendation_models ADD COLUMN training_hash TEXT",
+      "ALTER TABLE recommendation_models ADD COLUMN validation_accuracy REAL",
+      "ALTER TABLE recommendation_models ADD COLUMN suggested_low_threshold REAL NOT NULL DEFAULT 30",
+      "ALTER TABLE recommendation_models ADD COLUMN suggested_high_threshold REAL NOT NULL DEFAULT 70",
+      "ALTER TABLE recommendation_models ADD COLUMN feature_version INTEGER NOT NULL DEFAULT 1",
+      "ALTER TABLE recommendation_keywords ADD COLUMN idf REAL NOT NULL DEFAULT 1",
+    ],
+  },
+];
 
 export const CREATE_SCHEMA_SQL = `
 PRAGMA foreign_keys = ON;
@@ -112,5 +143,5 @@ CREATE INDEX IF NOT EXISTS idx_recommendation_scores_tier
 CREATE INDEX IF NOT EXISTS idx_translations_status
   ON translations(status, field);
 
-INSERT OR IGNORE INTO schema_migrations(version) VALUES (${SCHEMA_VERSION});
+INSERT OR IGNORE INTO schema_migrations(version) VALUES (1);
 `;

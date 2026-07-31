@@ -6,9 +6,12 @@ import type {
 } from "sql.js";
 import initSqlJs from "sql.js/dist/sql-asm.js";
 
-import { t, tx } from "../i18n";
+import { t } from "../i18n";
 import type { DatabaseOperationCoordinator } from "../services/database-operation-coordinator";
-import { CREATE_SCHEMA_SQL } from "./schema";
+import {
+  CREATE_SCHEMA_SQL,
+  SCHEMA_MIGRATIONS,
+} from "./schema";
 
 export class RssDatabase {
   private sql: SqlJsStatic | null = null;
@@ -63,7 +66,7 @@ export class RssDatabase {
         this.database = new this.sql.Database(new Uint8Array(bytes));
       } else {
         if (options.createIfMissing === false) {
-          throw new Error(t("所选目录中没有 rss-reader.sqlite3"));
+          throw new Error(t("ui.the_selected_directory_does_not_contain_rss_reader_sqlite3"));
         }
         this.recoveryResult = {
           recovered: false,
@@ -75,6 +78,7 @@ export class RssDatabase {
     }
 
     this.database.run(CREATE_SCHEMA_SQL);
+    applySchemaMigrations(this.database);
     this.database.run(
       "UPDATE translations SET status='pending' WHERE status='translating'",
     );
@@ -83,7 +87,7 @@ export class RssDatabase {
 
   close(): void {
     if (this.pendingWrites > 0) {
-      throw new Error(t("数据库仍有保存任务正在进行"));
+      throw new Error(t("ui.the_database_still_has_a_save_operation_in_progress"));
     }
     this.database?.close();
     this.database = null;
@@ -96,7 +100,7 @@ export class RssDatabase {
 
   get raw(): Database {
     if (!this.database) {
-      throw new Error(t("数据库尚未初始化"));
+      throw new Error(t("ui.the_database_has_not_been_initialized"));
     }
     return this.database;
   }
@@ -174,6 +178,7 @@ export class RssDatabase {
     const next = new sql.Database(bytes);
     try {
       next.run(CREATE_SCHEMA_SQL);
+      applySchemaMigrations(next);
       next.run(
         "UPDATE translations SET status='pending' WHERE status='translating'",
       );
@@ -221,7 +226,7 @@ export class RssDatabase {
     );
     if (!temporaryInspection.valid) {
       throw new Error(
-        temporaryInspection.error ?? t("临时数据库快照校验失败"),
+        temporaryInspection.error ?? t("ui.the_temporary_database_snapshot_failed_validation"),
       );
     }
     const hadPrevious = await this.adapter.exists(this.databasePath);
@@ -235,7 +240,7 @@ export class RssDatabase {
         this.databasePath,
       );
       if (!persisted.valid) {
-        throw new Error(persisted.error ?? t("保存后的数据库校验失败"));
+        throw new Error(persisted.error ?? t("ui.the_saved_database_failed_validation"));
       }
       await removeIfExists(this.adapter, previousPath);
     } catch (error) {
@@ -262,10 +267,7 @@ export class RssDatabase {
     }
     const detail = error instanceof Error ? error.message : String(error);
     this.storageError = new Error(
-      tx(
-        `数据库保存失败，内存与磁盘状态可能不一致；已停止后续写入。${detail}`,
-        `Database saving failed and memory may differ from disk; further writes have been stopped. ${detail}`,
-      ),
+      t("database.save_failed", { detail }),
     );
     this.onStorageFailure(this.storageError);
   }
@@ -309,6 +311,38 @@ export interface DatabaseRecoveryResult {
   primaryError: string | null;
 }
 
+function applySchemaMigrations(database: Database): void {
+  const applied = new Set<number>();
+  const statement = database.prepare(
+    "SELECT version FROM schema_migrations ORDER BY version",
+  );
+  try {
+    while (statement.step()) {
+      applied.add(Number(statement.get()[0]));
+    }
+  } finally {
+    statement.free();
+  }
+  for (const migration of SCHEMA_MIGRATIONS) {
+    if (applied.has(migration.version)) {
+      continue;
+    }
+    database.run("BEGIN");
+    try {
+      for (const sql of migration.statements) {
+        database.run(sql);
+      }
+      database.run(
+        `INSERT INTO schema_migrations(version) VALUES (${migration.version})`,
+      );
+      database.run("COMMIT");
+    } catch (error) {
+      database.run("ROLLBACK");
+      throw error;
+    }
+  }
+}
+
 export async function recoverDatabaseFile(
   adapter: DataAdapter,
   databasePath: string,
@@ -340,12 +374,7 @@ export async function recoverDatabaseFile(
   }
   if (!selected) {
     const detail = [primary.error, ...errors].filter(Boolean).join("; ");
-    throw new Error(
-      tx(
-        `正式数据库及异常恢复候选均无效，请从 backups 恢复。${detail}`,
-        `The primary database and crash-recovery candidates are invalid. Restore from backups. ${detail}`,
-      ),
-    );
+    throw new Error(t("database.recovery_invalid", { detail }));
   }
 
   const displacedPath = `${databasePath}.recovery-displaced`;
@@ -357,7 +386,7 @@ export async function recoverDatabaseFile(
     await adapter.copy(selected.path, databasePath);
     const restored = await inspectDatabaseFile(adapter, databasePath);
     if (!restored.valid) {
-      throw new Error(restored.error ?? t("恢复后的数据库校验失败"));
+      throw new Error(restored.error ?? t("ui.the_restored_database_failed_validation"));
     }
     await removeIfExists(adapter, displacedPath);
     await removeIfExists(adapter, `${databasePath}.tmp`);
@@ -393,7 +422,9 @@ export async function inspectDatabaseFile(
     const integrity = database.exec("PRAGMA integrity_check");
     const result = integrity[0]?.values[0]?.[0];
     if (result !== "ok") {
-      throw new Error(`SQLite 完整性检查失败：${String(result ?? t("未知错误"))}`);
+      throw new Error(t("database.integrity_failed", {
+        detail: String(result ?? t("ui.unknown_error")),
+      }));
     }
     const requiredTables = ["feeds", "items", "item_feeds"];
     const tables = new Set(
@@ -403,12 +434,9 @@ export async function inspectDatabaseFile(
     );
     const missing = requiredTables.filter((table) => !tables.has(table));
     if (missing.length > 0) {
-      throw new Error(
-        tx(
-          `数据库缺少核心表：${missing.join("、")}`,
-          `The database is missing required tables: ${missing.join(", ")}`,
-        ),
-      );
+      throw new Error(t("database.missing_tables", {
+        tables: missing.join(", "),
+      }));
     }
     return { exists: true, valid: true, error: null };
   } catch (error) {

@@ -36,6 +36,9 @@ Use **Load target database** only when the target already contains a valid datab
 
 ## Feed updates fail
 
+- Version 1.2.0 shows feed health and consecutive failures. Automatic updates back off after repeated failures; a manual per-feed update retries immediately.
+- HTTP 304 is a successful cache validation, not an empty feed.
+- The scheduler stops waiting after 20 seconds. Obsidian `requestUrl()` cannot abort an already-sent request, but late responses after cancellation or timeout are ignored and never written.
 - Confirm the feed URL is a valid HTTP or HTTPS URL.
 - Open the URL in a browser to check whether the source is available.
 - A failed feed does not prevent successfully fetched feeds from being saved.

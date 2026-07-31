@@ -15,7 +15,7 @@ export class DatabaseOperationCoordinator {
 
   acquireOperation(_kind: DatabaseOperationKind): ReleaseOperation {
     if (this.transitionActive) {
-      throw new Error(t("数据库正在切换或恢复，请稍后再试"));
+      throw new Error(t("ui.the_database_is_being_switched_or_restored_try_again_shortly"));
     }
     this.activeOperations += 1;
     return this.releaseOnce(() => {
@@ -35,10 +35,10 @@ export class DatabaseOperationCoordinator {
 
   acquireTransition(): ReleaseOperation {
     if (this.transitionActive) {
-      throw new Error(t("数据库正在切换或恢复，请稍后再试"));
+      throw new Error(t("ui.the_database_is_being_switched_or_restored_try_again_shortly"));
     }
     if (this.activeOperations > 0) {
-      throw new Error(t("后台任务正在执行，请等待任务完成后再切换或恢复数据库"));
+      throw new Error(t("ui.a_background_task_is_running_wait_for_it_to_finish_before_switching_or_r"));
     }
     this.transitionActive = true;
     return this.releaseOnce(() => {

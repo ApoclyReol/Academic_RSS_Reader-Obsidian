@@ -1,7 +1,7 @@
 import type { BindParams, Database, SqlValue } from "sql.js";
 
 import { RssDatabase } from "../database/database";
-import { tx } from "../i18n";
+import { t } from "../i18n";
 import { stableGuid } from "../services/rss-parser";
 import {
   ITEM_STATUSES,
@@ -326,15 +326,48 @@ export class RssRepository {
   async updateFeedCheck(
     feedId: number,
     error: string | null,
+    cache: {
+      etag?: string | null;
+      lastModified?: string | null;
+      success?: boolean;
+      nextAutoUpdateAt?: string | null;
+    } = {},
   ): Promise<void> {
     await this.database.write((db) => {
+      if (cache.success) {
+        db.run(
+          `
+          UPDATE feeds SET
+            last_checked_at=CURRENT_TIMESTAMP,last_success_at=CURRENT_TIMESTAMP,
+            last_error=NULL,consecutive_failures=0,health_status='healthy',
+            next_auto_update_at=NULL,
+            etag=COALESCE($etag,etag),
+            last_modified=COALESCE($lastModified,last_modified)
+          WHERE id=$id
+          `,
+          {
+            $id: feedId,
+            $etag: cache.etag ?? null,
+            $lastModified: cache.lastModified ?? null,
+          },
+        );
+        return;
+      }
       db.run(
         `
-        UPDATE feeds
-        SET last_checked_at=CURRENT_TIMESTAMP, last_error=$error
+        UPDATE feeds SET
+          last_checked_at=CURRENT_TIMESTAMP,last_error=$error,
+          consecutive_failures=consecutive_failures+1,
+          health_status=CASE WHEN consecutive_failures+1>=3
+            THEN 'failing' ELSE 'degraded' END,
+          next_auto_update_at=$nextAutoUpdateAt
         WHERE id=$id
         `,
-        { $id: feedId, $error: error },
+        {
+          $id: feedId,
+          $error: error,
+          $nextAutoUpdateAt: cache.nextAutoUpdateAt ?? null,
+        },
       );
     });
   }
@@ -662,7 +695,10 @@ export class RssRepository {
     return this.database
       .query<Row>(
         `
-        SELECT i.*,NULL AS final_tier,NULL AS keyword_score,NULL AS llm_tier,
+        SELECT i.*,COALESCE((SELECT GROUP_CONCAT(f.name,' ')
+          FROM item_feeds x JOIN feeds f ON f.id=x.feed_id
+          WHERE x.item_id=i.id),'') AS feed_names,
+          NULL AS final_tier,NULL AS keyword_score,NULL AS llm_tier,
           '[]' AS matched_keywords,NULL AS translated_title,NULL AS translated_abstract,
           NULL AS title_translation_status,NULL AS abstract_translation_status
         FROM items i
@@ -677,7 +713,10 @@ export class RssRepository {
     return this.database
       .query<Row>(
         `
-        SELECT i.*,NULL AS final_tier,NULL AS keyword_score,NULL AS llm_tier,
+        SELECT i.*,COALESCE((SELECT GROUP_CONCAT(f.name,' ')
+          FROM item_feeds x JOIN feeds f ON f.id=x.feed_id
+          WHERE x.item_id=i.id),'') AS feed_names,
+          NULL AS final_tier,NULL AS keyword_score,NULL AS llm_tier,
           '[]' AS matched_keywords,NULL AS translated_title,NULL AS translated_abstract,
           NULL AS title_translation_status,NULL AS abstract_translation_status
         FROM items i
@@ -715,6 +754,29 @@ export class RssRepository {
       negativeCount: Number(model?.negative_count ?? 0),
       unreadCount: Number(model?.unread_count ?? 0),
       createdAt: model ? String(model.created_at) : null,
+      intercept: Number(model?.intercept ?? 0),
+      trainingHash: model?.training_hash
+        ? String(model.training_hash)
+        : null,
+      validationAccuracy:
+        model?.validation_accuracy === null ||
+        model?.validation_accuracy === undefined
+          ? null
+          : Number(model.validation_accuracy),
+      suggestedLowThreshold: Number(
+        model?.suggested_low_threshold ?? 30,
+      ),
+      suggestedHighThreshold: Number(
+        model?.suggested_high_threshold ?? 70,
+      ),
+      activeLowThreshold: Number(
+        model?.suggested_low_threshold ?? 30,
+      ),
+      activeHighThreshold: Number(
+        model?.suggested_high_threshold ?? 70,
+      ),
+      featureVersion: Number(model?.feature_version ?? 1),
+      isStale: false,
       errorMessage: model?.error_message
         ? String(model.error_message)
         : null,
@@ -728,70 +790,110 @@ export class RssRepository {
         SELECT *,
           CASE
             WHEN is_disabled=1 THEN 0
-            WHEN manual_weight IS NOT NULL THEN manual_weight
             ELSE auto_weight
           END AS effective_weight
         FROM recommendation_keywords
-        ORDER BY ABS(
-          CASE WHEN manual_weight IS NOT NULL THEN manual_weight ELSE auto_weight END
-        ) DESC
+        ORDER BY is_disabled DESC, ABS(auto_weight) DESC
         LIMIT ${Math.max(1, Math.min(limit, 5000))}
         `,
       )
       .map((row) => ({
         keyword: String(row.keyword),
+        idf: Number(row.idf ?? 1),
         autoWeight: Number(row.auto_weight),
         positiveCount: Number(row.positive_count),
         negativeCount: Number(row.negative_count),
-        manualDirection: row.manual_direction
-          ? (String(row.manual_direction) as "positive" | "negative")
-          : null,
-        manualWeight:
-          row.manual_weight === null ? null : Number(row.manual_weight),
         isDisabled: Boolean(row.is_disabled),
         effectiveWeight: Number(row.effective_weight),
       }));
   }
 
-  async saveKeywordOverride(
-    keyword: string,
-    direction: "positive" | "negative",
-    weight: number,
-    disabled: boolean,
+  listRecommendationScoreHashes(): Map<number, string> {
+    return new Map(
+      this.database
+        .query<Row>("SELECT item_id,content_hash FROM recommendation_scores")
+        .map((row) => [
+          Number(row.item_id),
+          String(row.content_hash),
+        ]),
+    );
+  }
+
+  async updateRecommendationScores(
+    modelVersion: string,
+    unreadIds: number[],
+    scores: Array<{
+      itemId: number;
+      score: number;
+      tier: string;
+      matchedKeywords: string;
+      contentHash: string;
+    }>,
   ): Promise<void> {
-    const signedWeight = direction === "positive" ? weight : -weight;
     await this.database.write((db) => {
-      db.run(
-        `
-        INSERT INTO recommendation_keywords(
-          keyword,manual_direction,manual_weight,is_disabled
-        ) VALUES ($keyword,$direction,$weight,$disabled)
-        ON CONFLICT(keyword) DO UPDATE SET
-          manual_direction=excluded.manual_direction,
-          manual_weight=excluded.manual_weight,
-          is_disabled=excluded.is_disabled,
-          updated_at=CURRENT_TIMESTAMP
-        `,
-        {
-          $keyword: keyword,
-          $direction: direction,
-          $weight: signedWeight,
-          $disabled: disabled ? 1 : 0,
-        },
-      );
+      if (unreadIds.length === 0) {
+        db.run("DELETE FROM recommendation_scores");
+      } else {
+        const placeholders = unreadIds
+          .map((_, index) => `$keep${index}`)
+          .join(",");
+        db.run(
+          `DELETE FROM recommendation_scores WHERE item_id NOT IN (${placeholders})`,
+          Object.fromEntries(
+            unreadIds.map((id, index) => [`$keep${index}`, id]),
+          ),
+        );
+      }
+      const statement = db.prepare(`
+        INSERT INTO recommendation_scores(
+          item_id,keyword_score,keyword_tier,final_tier,matched_keywords,
+          model_version,content_hash
+        ) VALUES ($itemId,$score,$tier,$tier,$matched,$version,$hash)
+        ON CONFLICT(item_id) DO UPDATE SET
+          keyword_score=excluded.keyword_score,
+          keyword_tier=excluded.keyword_tier,
+          final_tier=excluded.final_tier,
+          matched_keywords=excluded.matched_keywords,
+          model_version=excluded.model_version,
+          content_hash=excluded.content_hash,
+          scored_at=CURRENT_TIMESTAMP,
+          llm_tier=NULL,llm_error=NULL,llm_reviewed_at=NULL
+      `);
+      try {
+        for (const score of scores) {
+          statement.run({
+            $itemId: score.itemId,
+            $score: score.score,
+            $tier: score.tier,
+            $matched: score.matchedKeywords,
+            $version: modelVersion,
+            $hash: score.contentHash,
+          });
+        }
+      } finally {
+        statement.free();
+      }
     });
   }
 
-  async resetKeywordOverride(keyword: string): Promise<void> {
+  async setKeywordDisabled(
+    keyword: string,
+    disabled: boolean,
+  ): Promise<void> {
     await this.database.write((db) => {
       db.run(
         `
         UPDATE recommendation_keywords SET
-          manual_direction=NULL,manual_weight=NULL,is_disabled=0,
+          is_disabled=$disabled,
+          manual_direction=NULL,
+          manual_weight=NULL,
           updated_at=CURRENT_TIMESTAMP
         WHERE keyword=$keyword
         `,
-        { $keyword: keyword },
+        {
+          $keyword: keyword,
+          $disabled: disabled ? 1 : 0,
+        },
       );
     });
   }
@@ -801,12 +903,19 @@ export class RssRepository {
     positiveCount: number;
     negativeCount: number;
     unreadCount: number;
+    intercept?: number;
+    trainingHash?: string | null;
+    validationAccuracy?: number | null;
+    suggestedLowThreshold?: number;
+    suggestedHighThreshold?: number;
+    featureVersion?: number;
     errorMessage: string | null;
     keywords: Array<{
       keyword: string;
       autoWeight: number;
       positiveCount: number;
       negativeCount: number;
+      idf?: number;
     }>;
     scores: Array<{
       itemId: number;
@@ -820,8 +929,13 @@ export class RssRepository {
       db.run(
         `
         INSERT INTO recommendation_models(
-          model_version,positive_count,negative_count,unread_count,error_message
-        ) VALUES ($version,$positive,$negative,$unread,$error)
+          model_version,positive_count,negative_count,unread_count,error_message,
+          intercept,training_hash,validation_accuracy,suggested_low_threshold,
+          suggested_high_threshold,feature_version
+        ) VALUES (
+          $version,$positive,$negative,$unread,$error,$intercept,$trainingHash,
+          $accuracy,$low,$high,$featureVersion
+        )
         `,
         {
           $version: input.modelVersion,
@@ -829,22 +943,35 @@ export class RssRepository {
           $negative: input.negativeCount,
           $unread: input.unreadCount,
           $error: input.errorMessage,
+          $intercept: input.intercept ?? 0,
+          $trainingHash: input.trainingHash ?? null,
+          $accuracy: input.validationAccuracy ?? null,
+          $low: input.suggestedLowThreshold ?? 30,
+          $high: input.suggestedHighThreshold ?? 70,
+          $featureVersion: input.featureVersion ?? 1,
         },
       );
       if (input.errorMessage) {
         return;
       }
       db.run("DELETE FROM recommendation_scores");
+      db.run(
+        `
+        DELETE FROM recommendation_keywords
+        WHERE is_disabled=0
+        `,
+      );
       const keywordStatement = db.prepare(
         `
           INSERT INTO recommendation_keywords(
-            keyword,auto_weight,positive_count,negative_count,model_version
-          ) VALUES ($keyword,$weight,$positive,$negative,$version)
+            keyword,auto_weight,positive_count,negative_count,model_version,idf
+          ) VALUES ($keyword,$weight,$positive,$negative,$version,$idf)
           ON CONFLICT(keyword) DO UPDATE SET
             auto_weight=excluded.auto_weight,
             positive_count=excluded.positive_count,
             negative_count=excluded.negative_count,
             model_version=excluded.model_version,
+            idf=excluded.idf,
             updated_at=CURRENT_TIMESTAMP
           `,
       );
@@ -855,6 +982,7 @@ export class RssRepository {
             $weight: keyword.autoWeight,
             $positive: keyword.positiveCount,
             $negative: keyword.negativeCount,
+            $idf: keyword.idf ?? 1,
             $version: input.modelVersion,
           });
         }
@@ -1127,6 +1255,16 @@ export class RssRepository {
         ? String(row.last_checked_at)
         : null,
       lastError: row.last_error ? String(row.last_error) : null,
+      etag: row.etag ? String(row.etag) : null,
+      lastModified: row.last_modified ? String(row.last_modified) : null,
+      lastSuccessAt: row.last_success_at
+        ? String(row.last_success_at)
+        : null,
+      consecutiveFailures: Number(row.consecutive_failures ?? 0),
+      healthStatus: (row.health_status ?? "healthy") as Feed["healthStatus"],
+      nextAutoUpdateAt: row.next_auto_update_at
+        ? String(row.next_auto_update_at)
+        : null,
       itemCount: Number(row.item_count ?? 0),
     };
   }
@@ -1134,12 +1272,7 @@ export class RssRepository {
   private toItem(row: Row): RssItem {
     const status = String(row.item_status);
     if (!ITEM_STATUSES.includes(status as ItemStatus)) {
-      throw new Error(
-        tx(
-          `未知条目状态：${status}`,
-          `Unknown item status: ${status}`,
-        ),
-      );
+      throw new Error(t("database.unknown_item_status", { status }));
     }
     return {
       id: Number(row.id),
@@ -1148,6 +1281,7 @@ export class RssRepository {
       titleNorm: String(row.title_norm),
       authors: String(row.authors ?? ""),
       journal: String(row.journal ?? ""),
+      feedNames: String(row.feed_names ?? ""),
       year: String(row.year ?? ""),
       doi: String(row.doi ?? ""),
       link: String(row.link ?? ""),

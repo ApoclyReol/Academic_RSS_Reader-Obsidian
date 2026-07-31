@@ -7,15 +7,15 @@ export function resolveVaultDirectoryPath(
 ): string {
   const value = directory.trim();
   if (!value || isAbsolutePath(value)) {
-    throw new Error(t("请选择当前 Vault 内的相对目录"));
+    throw new Error(t("ui.choose_a_relative_directory_inside_the_current_vault"));
   }
   const segments = value.replaceAll("\\", "/").split("/");
   if (segments.some((segment) => segment === "..")) {
-    throw new Error(t("数据目录必须位于当前 Vault 内"));
+    throw new Error(t("ui.the_data_directory_must_be_inside_the_current_vault"));
   }
   const normalized = normalizeVaultPath(value);
   if (!normalized || normalized === "." || normalized.startsWith("../")) {
-    throw new Error(t("数据目录必须位于当前 Vault 内"));
+    throw new Error(t("ui.the_data_directory_must_be_inside_the_current_vault"));
   }
   return normalized;
 }
