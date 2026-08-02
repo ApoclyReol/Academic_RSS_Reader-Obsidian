@@ -40,7 +40,9 @@ git diff --check
 ```
 
 - 数据库、生命周期、路径、翻译、推荐和本地化行为应增加对应测试。
-- 发布前检查 ZIP 只有插件顶层目录及 `main.js`、`manifest.json`、`styles.css`。
+- 构建产物目录统一为 `build/`，不得再使用或创建 `dist/`、`out/` 等并行产物目录。
+- `npm run package` 必须先清空 `build/`，再将 `main.js`、`manifest.json`、`styles.css` 直接复制到其中；不得生成 ZIP、校验文件、插件子目录或其他产物。
+- 发布前检查 `build/` 顶层只包含 `main.js`、`manifest.json`、`styles.css`。
 - 扫描最终 `main.js`，确认依赖没有重新打入 Node `fs` / `path` 分支。
 - 桌面正式版本应在 Windows 和 macOS 验收，并检查中文界面与英文回退。
 
@@ -48,14 +50,15 @@ git diff --check
 
 - 版本同步：`package.json`、`package-lock.json`、`manifest.json`、`versions.json`、RSS User-Agent、Changelog、README 和版本发布说明。
 - 正式 tag 与 manifest 完全一致，格式为 `x.y.z`，不带 `v`。
-- GitHub Release 只上传 `main.js`、`manifest.json`、`styles.css`；ZIP 与 `SHA256SUMS.txt` 仅作本地产物。
+- GitHub Release 只上传 `main.js`、`manifest.json`、`styles.css`；本地构建同样不生成 ZIP 或 `SHA256SUMS.txt`。
 - 发布工作流必须先通过 lint、测试和生产构建，再生成三个资源的 artifact attestations。
 - 发布后核对 workflow、tag 指向、资源清单和每个资源的 attestation 记录。
 
 ## 延期事项
 
-- 最低支持版本仍为 Obsidian 1.11.4，继续使用 `PluginSettingTab.display()`。
-- 正式采用 Obsidian 1.13 后，再提高 `minAppVersion`、迁移 `getSettingDefinitions()`、删除 `display()` / `redisplay()`，并验证设置搜索、动态数据库状态、目录联想、SecretStorage 和操作按钮。
+- v1.3.0 起最低支持 Obsidian 1.13.0，设置页使用 `getSettingDefinitions()`；安装或更新前要求用户使用最新的 1.13.x 版本。
+- 数据目录、SecretStorage、数据库操作和动态数据库状态通过声明式设置的 `render` 保留，简单字段使用 `control`。
+- CI 与 Release 工作流后续统一迁移到 Node.js 24、`actions/checkout@v6` 和 `actions/setup-node@v6`；迁移后必须复核构建、发布资源和 artifact attestations。该事项不改变插件运行时兼容范围。
 
 ## 临时交接
 

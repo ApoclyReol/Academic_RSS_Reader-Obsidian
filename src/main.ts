@@ -51,6 +51,7 @@ export default class RssReaderPlugin extends Plugin {
   databaseState: DatabaseState = "unconfigured";
   databaseError: string | null = null;
   private context: ServiceContext | null = null;
+  private settingTab: RssReaderSettingTab | null = null;
   private automaticUpdateStarted = false;
   private readonly operationCoordinator =
     new DatabaseOperationCoordinator();
@@ -108,8 +109,10 @@ export default class RssReaderPlugin extends Plugin {
           this.runUpdateWithNotice(t("ui.manual_update")),
         ),
     });
-    this.addSettingTab(new RssReaderSettingTab(this.app, this));
+    this.settingTab = new RssReaderSettingTab(this.app, this);
+    this.addSettingTab(this.settingTab);
     this.register(() => {
+      this.settingTab = null;
       void this.disposeContext(this.context).catch(() => undefined);
     });
   }
@@ -202,6 +205,7 @@ export default class RssReaderPlugin extends Plugin {
     ) {
       this.databaseState = "initializing";
       this.databaseError = null;
+      this.refreshSettings();
       void this.initializeConfiguredDatabase(
         this.settings.dataDirectory,
       );
@@ -311,6 +315,7 @@ export default class RssReaderPlugin extends Plugin {
       this.databaseState = "ready";
       this.databaseError = null;
       this.automaticUpdateStarted = false;
+      this.refreshSettings();
       await this.disposeContext(previous);
     } finally {
       if (next) {
@@ -437,6 +442,7 @@ export default class RssReaderPlugin extends Plugin {
       this.databaseState = "error";
       this.databaseError =
         error instanceof Error ? error.message : String(error);
+      this.refreshSettings();
       await this.refreshViews().catch(() => undefined);
     }
   }
@@ -451,6 +457,7 @@ export default class RssReaderPlugin extends Plugin {
   ): Promise<void> {
     this.databaseState = "initializing";
     this.databaseError = null;
+    this.refreshSettings();
     await this.refreshViews();
     const path = databasePaths(
       await this.resolveVaultDirectory(directory),
@@ -465,6 +472,7 @@ export default class RssReaderPlugin extends Plugin {
       this.settings.dataDirectory = directory;
       this.databaseState = "ready";
       this.automaticUpdateStarted = false;
+      this.refreshSettings();
       if (previous && previous !== this.context) {
         await this.disposeContext(previous).catch(() => undefined);
       }
@@ -474,6 +482,7 @@ export default class RssReaderPlugin extends Plugin {
       this.databaseState = "error";
       this.databaseError =
         error instanceof Error ? error.message : String(error);
+      this.refreshSettings();
       await this.refreshViews();
       throw error;
     }
@@ -642,6 +651,7 @@ export default class RssReaderPlugin extends Plugin {
     }
     this.databaseState = "error";
     this.databaseError = error.message;
+    this.refreshSettings();
     void this.context.translationService.stop();
     new Notice(error.message, 0);
     void this.refreshViews().catch(() => undefined);
@@ -727,6 +737,10 @@ export default class RssReaderPlugin extends Plugin {
   ): Promise<string> {
     const value = normalizeDirectory(directory);
     return resolveVaultDirectoryPath(value);
+  }
+
+  private refreshSettings(): void {
+    this.settingTab?.update();
   }
 
   getLlmApiKey(): string {

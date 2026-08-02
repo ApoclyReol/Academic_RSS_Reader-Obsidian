@@ -258,6 +258,33 @@
   vertical-align: top;
 }
 
+.rss-reader__table--compact {
+  font-size: var(--font-ui-small);
+  margin-left: auto;
+  margin-right: auto;
+  width: fit-content;
+}
+
+.rss-reader__table--compact th,
+.rss-reader__table--compact td {
+  text-align: center;
+  vertical-align: middle;
+}
+
+.rss-reader__table--compact th {
+  font-size: var(--font-ui-small);
+  font-weight: var(--font-semibold);
+  white-space: nowrap;
+}
+
+.rss-reader__table--compact td {
+  overflow-wrap: anywhere;
+}
+
+.rss-reader__table--compact .rss-reader__table-actions {
+  justify-content: center;
+}
+
 .rss-reader__table-actions {
   display: flex;
   gap: var(--size-2-2);

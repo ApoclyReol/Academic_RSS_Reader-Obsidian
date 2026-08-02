@@ -773,14 +773,13 @@ export class RssReaderView extends ItemView {
       return;
     }
     const table = container.createEl("table", {
-      cls: "rss-reader__table",
+      cls: "rss-reader__table rss-reader__table--compact",
     });
     const header = table.createEl("thead").createEl("tr");
     for (const label of [
       t("ui.name"),
       t("ui.enabled"),
       t("ui.items"),
-      t("ui.last_checked"),
       t("feed.last_success"),
       t("feed.health"),
       t("feed.next_attempt"),
@@ -808,11 +807,6 @@ export class RssReaderView extends ItemView {
           });
         });
       row.createEl("td", { text: String(feed.itemCount) });
-      row.createEl("td", {
-        text: feed.lastCheckedAt
-          ? formatDate(feed.lastCheckedAt)
-          : t("ui.never_updated"),
-      });
       row.createEl("td", {
         text: feed.lastSuccessAt ? formatDate(feed.lastSuccessAt) : "—",
       });
@@ -891,7 +885,7 @@ export class RssReaderView extends ItemView {
       })
       .sort((left, right) => right.rate - left.rate);
     const table = container.createEl("table", {
-      cls: "rss-reader__table",
+      cls: "rss-reader__table rss-reader__table--compact",
     });
     const header = table.createEl("thead").createEl("tr");
     for (const label of [

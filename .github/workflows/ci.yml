@@ -48,5 +48,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: academic-rss-reader-package
-          path: build/*.zip
+          path: |
+            build/main.js
+            build/manifest.json
+            build/styles.css
           if-no-files-found: error

@@ -15,7 +15,8 @@ npm run package
 
 - `npm run dev` 持续构建带内联 source map 的 `main.js`。
 - `npm run build` 执行 TypeScript 检查并生成压缩后的 `main.js`。
-- `npm run package` 先清空旧 `build/`，再生成完整插件目录、版本化 ZIP 和 SHA-256 校验文件。
+- `build/` 是唯一的构建产物目录，不使用 `dist/` 或 `out/`。
+- `npm run package` 先清空旧 `build/`，再将 `main.js`、`manifest.json`、`styles.css` 直接复制到 `build/` 顶层；该目录不保留其他文件或子目录。
 - SQLite ASM 运行时内嵌在 `main.js`，发布包不需要 WASM 文件。
 
 ## 模块边界
@@ -39,7 +40,7 @@ src/
 - UI 不直接执行 SQL。
 - 所有运行时文件操作使用 Obsidian Vault `DataAdapter` 和 Vault 相对路径。
 - 所有数据库写入经同一写链和事务，提交后以临时文件保护替换；替换失败时恢复上一文件。
-- 推荐模型只在用户主动操作时重建。
+- 每批订阅更新完成后自动刷新推荐；训练数据 hash 未变化时复用模型并仅增量评分。用户仍可通过按钮主动重建。
 - 标题翻译只由阅读页开关触发；译文变化局部更新卡片，不重绘整个列表。
 - 插件加载阶段不创建数据库；用户选择 Vault 内数据目录并创建或载入后，才构造 Repository 和业务服务。
 - 运行数据库与 `backups/` 固定在用户选择的数据目录，插件目录只保留 Obsidian 管理的设置和发布文件。
@@ -136,11 +137,16 @@ v1.0.0 增加：
 
 正式版本发布前，应在 Windows 和 macOS 桌面环境分别执行上述功能测试，并在对应版本发布说明中记录平台验证结果。
 
+## Obsidian 兼容性
+
+- v1.3.0 使用 `PluginSettingTab.getSettingDefinitions()`，最低支持 Obsidian 1.13.0。
+- 安装或更新 v1.3.0 前，用户必须先将 Obsidian 更新到最新的 1.13.x 版本。
+- 数据目录、SecretStorage、数据库操作和动态状态使用声明式设置中的 `render` 保留；简单字段使用 `control`。
+- 不再保留 `display()` / `redisplay()` 兼容分支，避免两套设置实现发生漂移。
+
 ## 延期事项
 
-- 在最低支持版本仍为 Obsidian 1.11.4 时保留 `PluginSettingTab.display()`。
-- 正式采用 Obsidian 1.13 后，提高 `minAppVersion`，迁移到 `getSettingDefinitions()`，删除 `display()` / `redisplay()`。
-- 迁移时验证设置搜索、动态数据库状态、Vault 目录联想、SecretStorage 和操作按钮。
+- GitHub Actions 当前仍使用 `actions/checkout@v4`、`actions/setup-node@v4` 和显式的 Node.js 20 构建环境。GitHub 托管 runner 已把旧 JavaScript Action 强制运行在 Node.js 24，Node.js 20 也已结束支持。后续维护应将 CI 与 Release 工作流统一升级到 `actions/checkout@v6`、`actions/setup-node@v6` 和 `node-version: 24`，然后重新验证 `npm ci`、lint、测试、生产构建、发布资源和 artifact attestations；该调整只影响开发与发布流水线，不影响 Obsidian 中的插件运行时。
 
 ## 发布
 
@@ -153,16 +159,16 @@ v1.0.0 增加：
 - RSS 请求 User-Agent
 - `README.md`、`README.zh-CN.md`、`CHANGELOG.md` 和对应版本发布说明
 
-发布 ZIP 中只能有：
+本地构建目录固定为：
 
 ```text
-academic-rss-reader/
+build/
 ├── main.js
 ├── manifest.json
 └── styles.css
 ```
 
-GitHub Release 标签与 `manifest.json` 完全相同且不带 `v`。推送版本标签后，`.github/workflows/release.yml` 会重新执行 lint、测试和构建，为 `main.js`、`manifest.json`、`styles.css` 生成 artifact attestations，并只将这三个受支持文件上传到 GitHub Release。版本化 ZIP 和 `SHA256SUMS.txt` 只作为本地手动安装与校验产物，不上传到 Release。
+`npm run package` 每次都先清空 `build/`，不得生成 ZIP、`SHA256SUMS.txt`、插件子目录或其他产物。GitHub Release 标签与 `manifest.json` 完全相同且不带 `v`。推送版本标签后，`.github/workflows/release.yml` 会重新执行 lint、测试和构建，为 `main.js`、`manifest.json`、`styles.css` 生成 artifact attestations，并只将这三个受支持文件上传到 GitHub Release。
 
 下载后可验证来源：
 

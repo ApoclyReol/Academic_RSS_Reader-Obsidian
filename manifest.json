@@ -1,8 +1,8 @@
 {
   "id": "academic-rss-reader",
   "name": "Academic RSS Reader",
-  "version": "1.2.0",
-  "minAppVersion": "1.11.4",
+  "version": "1.3.0",
+  "minAppVersion": "1.13.0",
   "description": "Subscribe to, read, organize, and prioritize academic RSS literature locally.",
   "author": "ApoclyReol",
   "isDesktopOnly": true

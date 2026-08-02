@@ -4,7 +4,7 @@
 
 Academic RSS Reader 是面向学术文献初筛的桌面插件。它在本地管理 RSS/Atom 订阅、五类文献篮子、标题翻译、个性化推荐和兴趣分析，不需要 Python sidecar。
 
-1.2.0 使用稳定键管理中英文界面，在 Web Worker 中训练稀疏推荐模型，并提供带缓存协商、并发限制和失败退避的订阅更新。
+1.3.0 迁移到 Obsidian 声明式设置 API，支持设置搜索，并要求使用最新的 Obsidian 1.13.x 版本。
 
 ## 功能
 
@@ -29,7 +29,7 @@ Academic RSS Reader 是面向学术文献初筛的桌面插件。它在本地管
 
 ## 安装
 
-插件已上线 Obsidian 社区插件市场，仅支持桌面端，最低版本为 1.11.4。推荐安装方式：
+插件已上线 Obsidian 社区插件市场，仅支持桌面端，要求 Obsidian 1.13.0 或更高版本。安装或更新 v1.3.0 前，请先将 Obsidian 更新到最新的 1.13.x 版本。推荐安装方式：
 
 1. 打开“设置 → 第三方插件”。
 2. 选择“浏览”，搜索 **Academic RSS Reader**。
@@ -84,7 +84,7 @@ npm run build
 npm run package
 ```
 
-本地 `build/` 会生成三文件插件目录、手动安装 ZIP 和 SHA-256 校验文件。GitHub Release 只发布 `main.js`、`manifest.json`、`styles.css`，并由 GitHub Actions 为这三个文件生成来源证明。
+`build/` 是唯一的构建产物目录。`npm run package` 会先清空该目录，再直接放入 `main.js`、`manifest.json`、`styles.css` 三个文件；项目不再使用独立的 `dist/` 或 `out/`，也不生成 ZIP 或校验文件。
 
 ## 文档
 
@@ -92,6 +92,7 @@ npm run package
 - [故障排查](docs/TROUBLESHOOTING.zh-CN.md)
 - [安全与隐私](SECURITY.md)
 - [版本记录](CHANGELOG.md)
+- [v1.3.0 发布说明](docs/V1_3_0_RELEASE.md)
 - [v1.2.0 发布说明](docs/V1_2_0_RELEASE.md)
 
 ## 许可证

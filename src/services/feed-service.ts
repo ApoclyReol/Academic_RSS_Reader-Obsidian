@@ -326,7 +326,7 @@ export class FeedService {
         const headers: Record<string, string> = {
           Accept:
             "application/rss+xml, application/atom+xml, application/xml, text/xml, */*",
-          "User-Agent": "Academic-RSS-Reader/1.2.0",
+          "User-Agent": "Academic-RSS-Reader/1.3.0",
         };
         if (feed.etag) {
           headers["If-None-Match"] = feed.etag;

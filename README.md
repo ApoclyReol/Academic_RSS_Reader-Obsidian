@@ -4,7 +4,7 @@
 
 Academic RSS Reader is a desktop plugin for screening academic literature from RSS and Atom feeds. It stores subscriptions, reading states, translations, recommendation data, and interest analysis locally without a Python sidecar.
 
-Version 1.2.0 adds stable-key English/Chinese localization, sparse recommendation training in a Web Worker, validation-based adjustable thresholds, and cache-aware concurrent feed updates.
+Version 1.3.0 adopts Obsidian's declarative settings API, adds settings-search compatibility, and requires the latest available Obsidian 1.13 release.
 
 ## Features
 
@@ -38,7 +38,7 @@ The endpoint may be rate-limited, unavailable in some regions, or changed upstre
 
 ## Installation
 
-The plugin supports desktop installations only and requires version 1.11.4 or later.
+The plugin supports desktop installations only and requires Obsidian 1.13.0 or later. Before installing or updating to v1.3.0, update Obsidian to the latest available 1.13.x release.
 
 Academic RSS Reader is available in the community plugin directory. The recommended installation method is:
 
@@ -108,7 +108,7 @@ npm run build
 npm run package
 ```
 
-`npm run package` creates a three-file plugin directory, a ZIP for manual installation, and local SHA-256 checksums under `build/`. GitHub Releases intentionally contain only `main.js`, `manifest.json`, and `styles.css`, because those are the supported release assets.
+`npm run package` uses `build/` as the only output directory. It clears the directory first, then places only `main.js`, `manifest.json`, and `styles.css` directly inside it. The project does not use separate `dist/` or `out/` directories and does not create ZIP or checksum artifacts.
 
 Release builds are generated from version tags in GitHub Actions. The workflow attests the provenance of all three release files before publishing them. A downloaded file can be verified with:
 
@@ -122,6 +122,7 @@ gh attestation verify main.js -R ApoclyReol/Academic_RSS_Reader-Obsidian
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [Security and privacy](SECURITY.md)
 - [Changelog](CHANGELOG.md)
+- [v1.3.0 release notes](docs/V1_3_0_RELEASE.md)
 - [v1.2.0 release notes](docs/V1_2_0_RELEASE.md)
 
 ## License

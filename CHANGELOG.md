@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.3.0 — 2026-08-02
+
+- 设置页迁移到 Obsidian 1.13 声明式 `getSettingDefinitions()` API，设置现在可以被 Obsidian 设置搜索索引。
+- 保留数据目录联想、Vault 路径检查、SecretStorage、数据库创建/载入/切换、备份/恢复和动态数据库状态反馈。
+- `manifest.json` 的最低 Obsidian 版本提升到 1.13.0。安装或更新 v1.3.0 前，必须先将 Obsidian 更新到最新的 1.13.x 版本。
+- 不改变现有 SQLite、`data.json` 或 SecretStorage 数据格式。
+
 ## 1.2.0 — 2026-07-31
 
 - 国际化迁移为稳定语义键和独立中英文语言包，支持插值、复数、数字与日期格式，并在 CI 检查语言包覆盖和硬编码文案。
