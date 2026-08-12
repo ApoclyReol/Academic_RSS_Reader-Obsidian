@@ -1,5 +1,8 @@
 export const en = {
+  "ui.app_name": "Academic RSS Reader",
   "ui.reader_is_available_on_desktop_only": "Academic RSS Reader is available on desktop only.",
+  "ui.native_sqlite_runtime_required": "Academic RSS Reader requires Obsidian Desktop with Node.js 22.16 or newer and the node:sqlite DatabaseSync and Backup API. The database cannot be loaded on this runtime (current Node.js {node}). Update Obsidian and try again.",
+  "ui.native_sqlite_desktop_host_required": "Native SQLite is available only in a desktop Node.js host.",
   "ui.open_reader": "Open Academic RSS Reader",
   "ui.open_reader_2": "Open reader",
   "ui.update_all_enabled_feeds": "Update all enabled feeds",
@@ -9,9 +12,11 @@ export const en = {
   "ui.the_selected_directory_already_contains_rss_reader_sqlite3_load_it_inste": "The selected directory already contains rss-reader.sqlite3. Load it instead.",
   "ui.the_selected_directory_does_not_contain_rss_reader_sqlite3": "The selected directory does not contain rss-reader.sqlite3.",
   "ui.the_database_still_has_a_save_operation_in_progress": "The database still has a save operation in progress.",
+  "ui.the_database_write_did_not_commit": "The database write did not commit.",
   "ui.the_temporary_database_snapshot_failed_validation": "The temporary database snapshot failed validation.",
   "ui.the_saved_database_failed_validation": "The saved database failed validation.",
   "ui.the_restored_database_failed_validation": "The restored database failed validation.",
+  "database.foreign_key_check_failed": "The database contains foreign-key violations.",
   "ui.the_selected_directory_is_already_the_current_data_directory": "The selected directory is already the current data directory.",
   "ui.the_selected_directory_points_to_the_current_data_directory": "The selected directory points to the current data directory.",
   "ui.the_target_directory_already_contains_rss_reader_sqlite3_migration_will_": "The target directory already contains rss-reader.sqlite3. Migration will not overwrite it.",
@@ -117,6 +122,7 @@ export const en = {
   "ui.hide": "Hide",
   "ui.expired_2": "Expired",
   "ui.journal": "Journal",
+  "ui.journal_name_used_when_rss_does_not_provide_one": "Used when the RSS item does not provide a journal name.",
   "ui.interest_rate": "Interest rate",
   "ui.yes": "Yes",
   "ui.no": "No",
@@ -173,6 +179,10 @@ export const en = {
   "ui.decide_whether_this_paper_deserves_priority_reading_return_high_or_low_o": "Decide whether this paper deserves priority reading. Return high or low only.",
   "ui.configure_the_llm_endpoint_api_key_and_model_first": "Configure the LLM endpoint, API key, and model first.",
   "ui.the_llm_returned_an_empty_response": "The LLM returned an empty response.",
+  "ui.the_llm_endpoint_must_use_https_or_local_http": "The LLM endpoint must use HTTPS, or HTTP on localhost/127.0.0.1.",
+  "ui.the_llm_endpoint_must_not_contain_credentials": "The LLM endpoint must not contain a username or password.",
+  "ui.the_llm_request_timed_out": "The LLM request timed out after 30 seconds.",
+  "ui.the_llm_request_failed": "The LLM request failed.",
   "ui.the_llm_must_return_exactly_high_or_low": "The LLM must return exactly high or low.",
   "ui.the_translation_service_returned_unrecognized_data": "The translation service returned unrecognized data.",
   "ui.the_translation_result_is_empty": "The translation result is empty.",
@@ -210,11 +220,17 @@ export const en = {
   "feed.candidates": "{count} feed candidates found.",
   "feed.preview_failed": "Preview failed: {error}",
   "feed.import_done": "Added {added}, skipped {skipped}, failed {failed}.",
+  "feed.invalid_xml": "Invalid RSS/Atom XML: {error}",
+  "feed.invalid_root": "The response is not a valid RSS or Atom feed.",
+  "feed.response_too_large": "The RSS/Atom response exceeds the 10 MiB limit.",
+  "feed.doctype_rejected": "DOCTYPE is not allowed in RSS/Atom responses.",
+  "feed.http_error": "The feed request failed with HTTP {status}.",
   "database.recovered": "An interrupted save was detected. The database was automatically restored from the {source}.",
   "database.identity_repaired": "Repaired {count} duplicate papers while preserving their statuses and relationships.",
   "translation.task_failed": "Translation task failed: {error}",
   "update.in_progress": "{trigger} in progress…",
   "update.done": "{trigger} completed: {newItems} new items, {failed} failed feeds.",
+  "update.done_with_recent_skips": "{trigger} completed: {newItems} new items, {failed} failed feeds. {skipped} feeds were updated recently and skipped automatically.",
   "update.failed": "{trigger} failed: {error}",
   "database.save_failed": "Database saving failed and memory may differ from disk; further writes have been stopped. {detail}",
   "database.recovery_invalid": "The primary database and crash-recovery candidates are invalid. Restore from backups. {detail}",
@@ -224,6 +240,9 @@ export const en = {
   "database.unknown_item_status": "Unknown item status: {status}",
   "database.integrity_failed": "SQLite integrity check failed: {detail}",
   "database.missing_tables": "The database is missing required tables: {tables}",
+  "database.migration_rollback_restored": "{error}; migration rollback restored the original database.",
+  "database.unsupported_schema_version": "Unsupported database schema version {actual}; expected {expected}.",
+  "database.adapter_full_path_unavailable": "The active Obsidian adapter does not expose getFullPath().",
   "ui.api_key": "API key",
   "ui.rss_url": "RSS URL"
   ,"feed.health": "Health"
@@ -236,7 +255,6 @@ export const en = {
   ,"recommendation.training_cancelled": "Recommendation training cancelled."
   ,"recommendation.positive_terms": "Positive: {terms}"
   ,"recommendation.negative_terms": "Negative: {terms}"
-  ,"recommendation.feature_terms": "Context: {terms}"
   ,"ui.item": "Item"
   ,"database.load_failed": "Database loading failed: {error}"
   ,"database.validation_failed": "A database file was found but validation failed: {error}"

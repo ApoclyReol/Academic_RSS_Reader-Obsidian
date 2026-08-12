@@ -1,5 +1,8 @@
 export const zhCN = {
+  "ui.app_name": "Academic RSS Reader",
   "ui.reader_is_available_on_desktop_only": "Academic RSS Reader 仅支持桌面端",
+  "ui.native_sqlite_runtime_required": "Academic RSS Reader 需要带有 Node.js 22.16 或更高版本，并支持 node:sqlite DatabaseSync 与 Backup API 的 Obsidian 桌面运行时。当前运行时无法载入数据库（当前 Node.js {node}），请更新 Obsidian 后重试。",
+  "ui.native_sqlite_desktop_host_required": "原生 SQLite 仅可在桌面版 Node.js 运行环境中使用。",
   "ui.open_reader": "打开 academic RSS reader",
   "ui.open_reader_2": "打开阅读器",
   "ui.update_all_enabled_feeds": "更新全部启用订阅",
@@ -9,9 +12,11 @@ export const zhCN = {
   "ui.the_selected_directory_already_contains_rss_reader_sqlite3_load_it_inste": "所选目录已存在 rss-reader.sqlite3，请使用载入",
   "ui.the_selected_directory_does_not_contain_rss_reader_sqlite3": "所选目录中没有 rss-reader.sqlite3",
   "ui.the_database_still_has_a_save_operation_in_progress": "数据库仍有保存任务正在进行",
+  "ui.the_database_write_did_not_commit": "数据库写入未提交",
   "ui.the_temporary_database_snapshot_failed_validation": "临时数据库快照校验失败",
   "ui.the_saved_database_failed_validation": "保存后的数据库校验失败",
   "ui.the_restored_database_failed_validation": "恢复后的数据库校验失败",
+  "database.foreign_key_check_failed": "数据库存在外键约束违规",
   "ui.the_selected_directory_is_already_the_current_data_directory": "所选目录就是当前数据目录",
   "ui.the_selected_directory_points_to_the_current_data_directory": "所选目录指向当前数据目录",
   "ui.the_target_directory_already_contains_rss_reader_sqlite3_migration_will_": "目标目录已存在 rss-reader.sqlite3，迁移不会覆盖它",
@@ -117,6 +122,7 @@ export const zhCN = {
   "ui.hide": "隐藏",
   "ui.expired_2": "过期",
   "ui.journal": "期刊",
+  "ui.journal_name_used_when_rss_does_not_provide_one": "当 RSS 文章没有提供期刊名称时使用。",
   "ui.interest_rate": "感兴趣率",
   "ui.yes": "是",
   "ui.no": "否",
@@ -173,6 +179,10 @@ export const zhCN = {
   "ui.decide_whether_this_paper_deserves_priority_reading_return_high_or_low_o": "判断论文是否值得优先阅读。只能返回 high 或 low。",
   "ui.configure_the_llm_endpoint_api_key_and_model_first": "请先配置 LLM 地址、API Key 和模型",
   "ui.the_llm_returned_an_empty_response": "LLM 返回内容为空",
+  "ui.the_llm_endpoint_must_use_https_or_local_http": "LLM 地址必须使用 HTTPS，或使用 localhost/127.0.0.1 上的 HTTP。",
+  "ui.the_llm_endpoint_must_not_contain_credentials": "LLM 地址不能包含用户名或密码。",
+  "ui.the_llm_request_timed_out": "LLM 请求在 30 秒后超时。",
+  "ui.the_llm_request_failed": "LLM 请求失败。",
   "ui.the_llm_must_return_exactly_high_or_low": "LLM 必须严格返回 high 或 low",
   "ui.the_translation_service_returned_unrecognized_data": "翻译服务返回了无法识别的数据",
   "ui.the_translation_result_is_empty": "翻译结果为空",
@@ -210,11 +220,17 @@ export const zhCN = {
   "feed.candidates": "识别到 {count} 个候选订阅",
   "feed.preview_failed": "预览失败：{error}",
   "feed.import_done": "新增 {added}，跳过 {skipped}，失败 {failed}",
+  "feed.invalid_xml": "RSS/Atom XML 无效：{error}",
+  "feed.invalid_root": "响应内容不是有效的 RSS 或 Atom 订阅。",
+  "feed.response_too_large": "RSS/Atom 响应超过 10 MiB 上限。",
+  "feed.doctype_rejected": "RSS/Atom 响应不允许包含 DOCTYPE。",
+  "feed.http_error": "订阅请求失败：HTTP {status}。",
   "database.recovered": "检测到保存中断，已从{source}自动恢复数据库。",
   "database.identity_repaired": "已修复 {count} 条重复文献，并保留原有状态与关联。",
   "translation.task_failed": "翻译任务失败：{error}",
   "update.in_progress": "{trigger}正在进行……",
   "update.done": "{trigger}完成：新增 {newItems} 条，失败订阅 {failed} 个",
+  "update.done_with_recent_skips": "{trigger}完成：新增 {newItems} 条，失败订阅 {failed} 个。{skipped} 个订阅近期更新过，已自动跳过",
   "update.failed": "{trigger}失败：{error}",
   "database.save_failed": "数据库保存失败，内存与磁盘状态可能不一致；已停止后续写入。{detail}",
   "database.recovery_invalid": "正式数据库及异常恢复候选均无效，请从 backups 恢复。{detail}",
@@ -224,6 +240,9 @@ export const zhCN = {
   "database.unknown_item_status": "未知条目状态：{status}",
   "database.integrity_failed": "SQLite 完整性检查失败：{detail}",
   "database.missing_tables": "数据库缺少核心表：{tables}",
+  "database.migration_rollback_restored": "{error}；迁移回滚已恢复原数据库。",
+  "database.unsupported_schema_version": "不支持数据库 schema 版本 {actual}；当前版本要求不高于 {expected}。",
+  "database.adapter_full_path_unavailable": "当前 Obsidian Adapter 不支持解析完整文件路径。",
   "ui.api_key": "API Key",
   "ui.rss_url": "RSS URL"
   ,"feed.health": "健康状态"
@@ -236,7 +255,6 @@ export const zhCN = {
   ,"recommendation.training_cancelled": "推荐训练已取消。"
   ,"recommendation.positive_terms": "正向：{terms}"
   ,"recommendation.negative_terms": "负向：{terms}"
-  ,"recommendation.feature_terms": "上下文：{terms}"
   ,"ui.item": "条目"
   ,"database.load_failed": "数据库载入失败：{error}"
   ,"database.validation_failed": "发现数据库文件，但校验失败：{error}"

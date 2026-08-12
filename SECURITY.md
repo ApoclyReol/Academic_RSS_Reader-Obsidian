@@ -1,21 +1,27 @@
 # 安全与隐私
 
+适用于 Academic RSS Reader v1.4.0。
+
 Academic RSS Reader 是本地桌面插件，不提供开发者中转服务器，不收集遥测。
 
 ## 网络请求
 
 - RSS 更新访问用户配置的订阅 URL。
+- RSS 文章链接和“打开原文”只允许 `http:` / `https:`；规范化链接只删除已知跟踪参数，保留业务查询参数。
+- RSS/XML 响应限制为 10 MiB，拒绝 `DOCTYPE`、无效 RSS/Atom 根结构和 HTML 错误页；合法的空 Feed 可以接受。
 - 用户开启标题翻译后，可见标题会直接发送给 Google 非正式网页翻译接口。
-- 用户主动执行 LLM 推荐复核时，待判断条目的标题、摘要及用户填写的兴趣描述会发送给其配置的 OpenAI 兼容服务。
+- 用户主动执行 LLM 推荐复核时，待判断条目的标题、摘要及用户填写的兴趣描述会发送给其配置的 OpenAI 兼容服务。LLM 地址只允许 HTTPS，或 `localhost`、`127.0.0.1`、`::1` 的 HTTP；请求超时为 30 秒，网络错误、429 和 5xx 最多重试两次。
 - “打开原文”交给系统默认浏览器。
 
 ## 本地数据
 
-订阅、文献、状态、译文和推荐结果保存在用户明确选择的 Vault 数据目录中的 SQLite 数据库。设置保存在插件目录的本地 `data.json`，保护性备份保存在用户数据目录的 `backups/`。
+订阅、文献、状态、译文和推荐结果保存在用户明确选择的 Vault 数据目录中的 SQLite 数据库。设置保存在插件目录的本地 `data.json`，保护性备份保存在用户数据目录的 `backups/`。v1.3 及更早数据库会在载入时原地迁移，迁移前先创建保护备份；失败时恢复原库。
 
 推荐特征提取、稀疏模型训练、留出验证和增量评分均在本机执行。只有用户主动执行 LLM 复核时，相关内容才会发送到用户配置的服务。
 
 RSS 请求会发送插件 User-Agent 和缓存验证头，并保存源站返回的 ETag 与 Last-Modified。调度器限制全局及同域并发，并在连续失败后降低自动请求频率。取消或超时会忽略迟到响应；受 Obsidian `requestUrl()` 限制，不能物理中断已经发出的请求。
+
+数据库主文件、WAL/SHM sidecar、受控临时文件和备份由桌面原生 SQLite 能力处理；其他 Vault 文件继续通过 Obsidian `DataAdapter` 访问，不使用 Vault 根路径扫描或插件目录数据库。
 
 LLM API Key 由 Obsidian SecretStorage 保存，插件的 `data.json` 只记录所选 SecretStorage 条目名称。从 v1.0.1 或更早版本升级时，插件会把旧 `llmApiKey` 迁入 SecretStorage，并从 `data.json` 删除明文。API Key：
 
@@ -33,4 +39,6 @@ LLM API Key 由 Obsidian SecretStorage 保存，插件的 `data.json` 只记录�
 - 备份与恢复目录必须位于当前 Vault 内。
 - 恢复前插件自动保存当前数据库恢复点。
 - 数据库无法打开或校验失败时，插件保留原文件、停止数据库相关服务，且不创建恢复库。
-- v1.0.0 的历史 GUID 修复只合并由预发布版本错误产生的非旧版 GUID 记录，并保留旧 GUID、用户状态和关联。
+- 原生运行时不满足 Node.js 22.16、`DatabaseSync` 或 SQLite Backup API 时，插件阻止数据库载入，不回退到 `sql.js`。
+- v1.4 迁移和恢复使用 incoming/rollback 文件并处理 WAL/SHM sidecar；发现有效候选时才会自动恢复。
+- 历史身份整理只在 DOI、出版商稳定 ID 或规范化 URL 等高可信身份无冲突时合并，并保留既有 GUID、用户状态、翻译、推荐结果和订阅关联；双方都有 ScienceDirect PII 且不同的记录不会通过弱字段合并。

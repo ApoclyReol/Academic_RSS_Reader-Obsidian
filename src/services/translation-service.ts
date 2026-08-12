@@ -14,7 +14,15 @@ type TaskPriority = 0 | 1 | 2 | 3;
 interface TranslationTask {
   itemId: number;
   field: TranslationField;
+  targetLanguage: string;
   priority: TaskPriority;
+}
+
+export interface TranslationChange {
+  itemId: number;
+  field: TranslationField;
+  targetLanguage: string;
+  status: TranslationRecord["status"];
 }
 
 export class TranslationService {
@@ -24,7 +32,7 @@ export class TranslationService {
   private stopped = false;
   private generation = 0;
   private lastRequestAt = 0;
-  private listeners = new Set<() => void>();
+  private listeners = new Set<(change: TranslationChange) => void>();
 
   constructor(
     private readonly repository: RssRepository,
@@ -43,6 +51,7 @@ export class TranslationService {
       this.enqueue({
         itemId: record.itemId,
         field: record.field,
+        targetLanguage: record.targetLanguage,
         priority: record.field === "title" ? 2 : 3,
       });
     }
@@ -65,7 +74,7 @@ export class TranslationService {
     }
   }
 
-  onChange(listener: () => void): () => void {
+  onChange(listener: (change: TranslationChange) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   }
@@ -145,13 +154,15 @@ export class TranslationService {
     if (this.stopped || generation !== this.generation) {
       return;
     }
-    this.enqueue({ itemId, field, priority });
+    this.enqueue({ itemId, field, targetLanguage, priority });
   }
 
   private enqueue(task: TranslationTask): void {
     const current = this.queue.find(
       (queued) =>
-        queued.itemId === task.itemId && queued.field === task.field,
+        queued.itemId === task.itemId &&
+        queued.field === task.field &&
+        queued.targetLanguage === task.targetLanguage,
     );
     if (current) {
       current.priority = Math.min(current.priority, task.priority) as TaskPriority;
@@ -198,16 +209,21 @@ export class TranslationService {
 
   private async runTask(task: TranslationTask): Promise<void> {
     const generation = this.generation;
-    const settings = this.getSettings();
     const record = this.repository.getTranslation(
       task.itemId,
       task.field,
-      settings.targetLanguage,
+      task.targetLanguage,
     );
     if (!record || record.status === "succeeded") {
       return;
     }
+    if (this.stopped || generation !== this.generation) {
+      return;
+    }
     if (isTargetLanguage(record.sourceText, record.targetLanguage)) {
+      if (this.stopped || generation !== this.generation) {
+        return;
+      }
       await this.repository.updateTranslation({
         ...record,
         translatedText: record.sourceText,
@@ -216,7 +232,10 @@ export class TranslationService {
         lastError: null,
         translatedAt: Date.now(),
       });
-      this.emitChange();
+      if (this.stopped || generation !== this.generation) {
+        return;
+      }
+      this.emitChange(task, "succeeded", record.targetLanguage);
       return;
     }
 
@@ -228,7 +247,7 @@ export class TranslationService {
       return;
     }
     await this.repository.updateTranslation(current);
-    this.emitChange();
+    this.emitChange(task, current.status, current.targetLanguage);
     for (let attempt = current.attemptCount + 1; attempt <= 3; attempt += 1) {
       try {
         await this.enforceInterval();
@@ -253,7 +272,7 @@ export class TranslationService {
           translatedAt: Date.now(),
         };
         await this.repository.updateTranslation(current);
-        this.emitChange();
+        this.emitChange(task, current.status, current.targetLanguage);
         return;
       } catch (error) {
         if (this.stopped || generation !== this.generation) {
@@ -265,6 +284,9 @@ export class TranslationService {
           attemptCount: attempt,
           lastError: error instanceof Error ? error.message : String(error),
         };
+        if (this.stopped || generation !== this.generation) {
+          return;
+        }
         await this.repository.updateTranslation(current);
         if (attempt < 3) {
           await delay(1_000 * attempt, this.timerWindow);
@@ -274,7 +296,17 @@ export class TranslationService {
         }
       }
     }
-    this.emitChange();
+    if (current.status === "failed") {
+      if (this.stopped || generation !== this.generation) {
+        return;
+      }
+      await this.repository.deleteTranslationTask(
+        current.itemId,
+        current.field,
+        current.targetLanguage,
+      );
+    }
+    this.emitChange(task, current.status, current.targetLanguage);
   }
 
   private async enforceInterval(): Promise<void> {
@@ -285,9 +317,23 @@ export class TranslationService {
     this.lastRequestAt = Date.now();
   }
 
-  private emitChange(): void {
+  private emitChange(
+    task: TranslationTask,
+    status: TranslationRecord["status"],
+    targetLanguage = this.getSettings().targetLanguage,
+  ): void {
+    const change: TranslationChange = {
+      itemId: task.itemId,
+      field: task.field,
+      targetLanguage,
+      status,
+    };
     for (const listener of this.listeners) {
-      listener();
+      try {
+        listener(change);
+      } catch (error) {
+        this.onError(error);
+      }
     }
   }
 }

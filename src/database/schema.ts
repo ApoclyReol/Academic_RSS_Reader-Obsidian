@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 export interface SchemaMigration {
   version: number;
@@ -27,6 +27,19 @@ export const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
       "ALTER TABLE recommendation_models ADD COLUMN suggested_high_threshold REAL NOT NULL DEFAULT 70",
       "ALTER TABLE recommendation_models ADD COLUMN feature_version INTEGER NOT NULL DEFAULT 1",
       "ALTER TABLE recommendation_keywords ADD COLUMN idf REAL NOT NULL DEFAULT 1",
+    ],
+  },
+  {
+    version: 4,
+    statements: [
+      "ALTER TABLE feeds ADD COLUMN journal_name TEXT NOT NULL DEFAULT ''",
+      "ALTER TABLE items RENAME COLUMN journal TO article_journal",
+      "UPDATE feeds SET journal_name=name",
+      "UPDATE items SET article_journal=NULL",
+      "CREATE INDEX IF NOT EXISTS idx_items_doi ON items(doi)",
+      "CREATE INDEX IF NOT EXISTS idx_items_link ON items(link)",
+      "CREATE INDEX IF NOT EXISTS idx_items_identity_fallback ON items(title_norm, authors, year)",
+      "CREATE INDEX IF NOT EXISTS idx_items_identity_fallback_journal ON items(title_norm, authors, year, article_journal)",
     ],
   },
 ];

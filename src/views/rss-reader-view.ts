@@ -19,9 +19,11 @@ import {
   type ItemQuery,
   type ItemStatus,
   type RssItem,
+  type TranslationStatus,
 } from "../models/domain";
 import { statusLabel } from "./status-label";
 import { executeUiAction } from "./ui-action";
+import { recommendationExplanation } from "./recommendation-explanation";
 
 type Page = "reader" | "feeds" | "analytics";
 
@@ -40,7 +42,7 @@ export class RssReaderView extends ItemView {
   private translationEnabled = false;
   private titleObserver: IntersectionObserver | null = null;
   private loadMoreObserver: IntersectionObserver | null = null;
-  private requestedTitleIds = new Set<number>();
+  private requestedTitleIds = new Set<string>();
   private readerItems: RssItem[] = [];
   private readerMatched = 0;
   private readerList: HTMLElement | null = null;
@@ -123,30 +125,52 @@ export class RssReaderView extends ItemView {
     }
   }
 
-  refreshTranslatedTitles(): void {
+  refreshTranslatedTitle(
+    itemId: number,
+    field: "title" | "abstract",
+    targetLanguage: string,
+    status?: TranslationStatus,
+  ): void {
+    if (status === "succeeded" || status === "failed") {
+      this.requestedTitleIds.delete(
+        translationRequestKey(itemId, field, targetLanguage),
+      );
+    }
     if (!this.plugin.isDatabaseReady()) {
       return;
     }
-    const cards = Array.from(
-      this.containerEl.querySelectorAll(
-        ".rss-reader__item[data-item-id]",
-      ),
+    const card = this.containerEl.querySelector(
+      `.rss-reader__item[data-item-id="${itemId}"]`,
     );
-    for (const card of cards) {
-      if (!card.instanceOf(HTMLElement)) {
-        continue;
+    if (!card?.instanceOf(HTMLElement)) {
+      return;
+    }
+    const item = this.plugin.repository.getItem(itemId, targetLanguage);
+    if (!item) {
+      return;
+    }
+    if (field === "title") {
+      const title = card.querySelector(".rss-reader__item-title");
+      if (title?.instanceOf(HTMLElement)) {
+        title.empty();
+        this.renderTitle(title, item);
       }
-      const itemId = Number(card.dataset.itemId);
-      const item = this.plugin.repository.getItem(
-        itemId,
+    } else {
+      const abstract = card.querySelector(".rss-reader__item-abstract");
+      if (abstract?.instanceOf(HTMLElement)) {
+        abstract.empty();
+        abstract.setText(item.translatedAbstract ?? item.summary);
+      }
+    }
+  }
+
+  refreshTranslatedTitles(): void {
+    for (const item of this.readerItems) {
+      this.refreshTranslatedTitle(
+        item.id,
+        "title",
         this.plugin.settings.targetLanguage,
       );
-      const title = card.querySelector(".rss-reader__item-title");
-      if (!item || !title?.instanceOf(HTMLElement)) {
-        continue;
-      }
-      title.empty();
-      this.renderTitle(title, item);
     }
   }
 
@@ -154,7 +178,7 @@ export class RssReaderView extends ItemView {
     const header = container.createDiv({ cls: "rss-reader__header" });
     const title = header.createDiv({ cls: "rss-reader__brand" });
     setIcon(title.createSpan(), "rss");
-    title.createEl("h2", { text: "Academic RSS reader" });
+    title.createEl("h2", { text: t("ui.app_name") });
 
     const navigation = header.createDiv({ cls: "rss-reader__navigation" });
     for (const [page, label, icon] of [
@@ -314,7 +338,9 @@ export class RssReaderView extends ItemView {
     this.renderStatusActions(actions, item);
     if (item.link) {
       this.actionButton(actions, t("ui.open_original"), "external-link", () => {
-        this.viewWindow()?.open(item.link, "_external");
+        if (/^https?:\/\//i.test(item.link)) {
+          this.viewWindow()?.open(item.link, "_external");
+        }
       });
     }
   }
@@ -473,38 +499,33 @@ export class RssReaderView extends ItemView {
         : tier === "low"
           ? t("ui.low_relevance")
           : t("ui.pending");
-    relevance.createSpan({
-      cls: `rss-reader__keyword-relevance is-${tier}`,
-      text: label,
+    const statusCell = relevance.createDiv({
+      cls: "rss-reader__relevance-cell is-status",
       attr: {
         "aria-label": t("recommendation.aria", { label }),
       },
     });
+    statusCell.createSpan({
+      cls: `rss-reader__keyword-relevance is-${tier}`,
+      text: label,
+    });
     const explanation = recommendationExplanation(item.matchedKeywords);
-    if (explanation.positive.length > 0) {
-      relevance.createDiv({
-        cls: "rss-reader__caption",
-        text: t("recommendation.positive_terms", {
-          terms: explanation.positive.join(", "),
-        }),
-      });
-    }
-    if (explanation.negative.length > 0) {
-      relevance.createDiv({
-        cls: "rss-reader__caption",
-        text: t("recommendation.negative_terms", {
-          terms: explanation.negative.join(", "),
-        }),
-      });
-    }
-    if (explanation.context.length > 0) {
-      relevance.createDiv({
-        cls: "rss-reader__caption",
-        text: t("recommendation.feature_terms", {
-          terms: explanation.context.join(", "),
-        }),
-      });
-    }
+    const positiveText = t("recommendation.positive_terms", {
+      terms: explanation.positive.join(", "),
+    });
+    relevance.createDiv({
+      cls: "rss-reader__relevance-cell is-positive",
+      text: positiveText,
+      attr: { title: positiveText },
+    });
+    const negativeText = t("recommendation.negative_terms", {
+      terms: explanation.negative.join(", "),
+    });
+    relevance.createDiv({
+      cls: "rss-reader__relevance-cell is-negative",
+      text: negativeText,
+      attr: { title: negativeText },
+    });
   }
 
   private observeVisibleTitles(
@@ -550,21 +571,28 @@ export class RssReaderView extends ItemView {
           if (
             !item ||
             item.translatedTitle ||
-            this.requestedTitleIds.has(item.id)
+            this.requestedTitleIds.has(
+              translationRequestKey(item.id, "title", this.plugin.settings.targetLanguage),
+            )
           ) {
             continue;
           }
-          this.requestedTitleIds.add(item.id);
+          const requestKey = translationRequestKey(
+            item.id,
+            "title",
+            this.plugin.settings.targetLanguage,
+          );
+          this.requestedTitleIds.add(requestKey);
           runUiAction(
             () =>
               this.plugin.translationService.requestManual(
                 item.id,
                 "title",
                 item.titleTranslationStatus === "failed",
-              ),
+              ).then(() => undefined),
             undefined,
             (error) => {
-              this.requestedTitleIds.delete(item.id);
+              this.requestedTitleIds.delete(requestKey);
               new Notice(errorMessage(error), 10_000);
             },
           );
@@ -778,6 +806,7 @@ export class RssReaderView extends ItemView {
     const header = table.createEl("thead").createEl("tr");
     for (const label of [
       t("ui.name"),
+      t("ui.journal"),
       t("ui.enabled"),
       t("ui.items"),
       t("feed.last_success"),
@@ -792,6 +821,7 @@ export class RssReaderView extends ItemView {
     for (const feed of feeds) {
       const row = body.createEl("tr");
       row.createEl("td", { text: feed.name });
+      row.createEl("td", { text: feed.journalName });
       const enabledCell = row.createEl("td");
       new ToggleComponent(enabledCell)
         .setValue(feed.enabled)
@@ -800,6 +830,7 @@ export class RssReaderView extends ItemView {
           runUiAction(async () => {
             await this.plugin.feedService.updateFeed(feed.id, {
               name: feed.name,
+              journalName: feed.journalName,
               url: feed.url,
               enabled,
             });
@@ -922,6 +953,7 @@ export class RssReaderView extends ItemView {
 
   private async runFeedUpdate(feedIds?: number[]): Promise<void> {
     const notice = new Notice(t("ui.updating_feeds"), 0);
+    let cancelled = false;
     try {
       const update = this.plugin.feedService.updateFeeds(feedIds, {
         onProgress: ({ completed, total, feedName }) => {
@@ -934,6 +966,11 @@ export class RssReaderView extends ItemView {
       });
       await this.refresh();
       const results = await update;
+      cancelled = results.some((result) => result.cancelled);
+      if (cancelled) {
+        notice.setMessage(t("ui.feed_update_cancelled"));
+        return;
+      }
       notice.setMessage(t("feed.update_done", {
         newItems: results.reduce(
           (sum, result) => sum + result.newItems,
@@ -947,7 +984,9 @@ export class RssReaderView extends ItemView {
       );
     } finally {
       this.viewWindow()?.setTimeout(() => notice.hide(), 5000);
-      await this.refresh();
+      if (!cancelled) {
+        await this.refresh();
+      }
     }
   }
 
@@ -1060,6 +1099,7 @@ class FeedModal extends Modal {
   onOpen(): void {
     this.setTitle(this.feed ? t("ui.edit_feed") : t("ui.add_feed"));
     let name = this.feed?.name ?? "";
+    let journalName = this.feed?.journalName ?? name;
     let url = this.feed?.url ?? "";
     let enabled = this.feed?.enabled ?? true;
     new Setting(this.contentEl)
@@ -1067,6 +1107,14 @@ class FeedModal extends Modal {
       .addText((text) =>
         text.setValue(name).onChange((value) => {
           name = value;
+        }),
+      );
+    new Setting(this.contentEl)
+      .setName(t("ui.journal"))
+      .setDesc(t("ui.journal_name_used_when_rss_does_not_provide_one"))
+      .addText((text) =>
+        text.setValue(journalName).onChange((value) => {
+          journalName = value;
         }),
       );
     new Setting(this.contentEl)
@@ -1087,7 +1135,7 @@ class FeedModal extends Modal {
         .setCta()
         .onClick(() => {
           runUiAction(async () => {
-            const input = { name, url, enabled };
+            const input = { name, journalName, url, enabled };
             if (this.feed) {
               await this.plugin.feedService.updateFeed(this.feed.id, input);
             } else {
@@ -1343,43 +1391,6 @@ function primitiveText(value: unknown, fallback: string): string {
     : fallback;
 }
 
-function recommendationExplanation(value: string): {
-  positive: string[];
-  negative: string[];
-  context: string[];
-} {
-  const parsed = safeJson(value);
-  const record =
-    parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
-      : {};
-  const terms = (key: string): string[] =>
-    Array.isArray(record[key])
-      ? record[key]
-          .filter(
-            (entry): entry is { keyword: string } =>
-              Boolean(
-                entry &&
-                typeof entry === "object" &&
-                "keyword" in entry &&
-                typeof (entry as { keyword?: unknown }).keyword ===
-                  "string",
-              ),
-          )
-          .map((entry) => entry.keyword)
-      : [];
-  const positive = terms("positive");
-  const negative = terms("negative");
-  const context = [...positive, ...negative].filter((term) =>
-    /^(?:author|journal|feed|freshness):/.test(term),
-  );
-  return {
-    positive: positive.filter((term) => !context.includes(term)).slice(0, 3),
-    negative: negative.filter((term) => !context.includes(term)).slice(0, 3),
-    context: context.slice(0, 3),
-  };
-}
-
 function runUiAction(
   action: () => void | Promise<void>,
   button?: HTMLButtonElement,
@@ -1396,4 +1407,12 @@ function runUiAction(
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function translationRequestKey(
+  itemId: number,
+  field: "title" | "abstract",
+  targetLanguage: string,
+): string {
+  return `${itemId}:${field}:${targetLanguage}`;
 }

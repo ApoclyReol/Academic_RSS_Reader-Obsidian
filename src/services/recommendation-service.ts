@@ -51,11 +51,13 @@ interface TrainedModel {
   weights: number[];
   intercept: number;
 }
-const FEATURE_VERSION = 3;
+export const FEATURE_VERSION = 4;
 
 export class RecommendationService {
   private activeWorker: Worker | null = null;
   private rejectTraining: ((error: Error) => void) | null = null;
+  private generation = 0;
+  private activeRebuild: Promise<RecommendationRun> | null = null;
   constructor(
     private readonly repository: RssRepository,
     private readonly operationCoordinator?: DatabaseOperationCoordinator,
@@ -73,22 +75,31 @@ export class RecommendationService {
   async rebuild(
     onProgress?: RecommendationProgress,
   ): Promise<RecommendationRun> {
-    const releaseOperation =
-      this.operationCoordinator?.acquireOperation("recommendation");
+    const generation = ++this.generation;
+    const run = this.rebuildInternal(onProgress, generation);
+    this.activeRebuild = run;
     try {
-      return await this.rebuildInternal(onProgress);
+      return await run;
     } finally {
-      releaseOperation?.();
+      if (this.activeRebuild === run) {
+        this.activeRebuild = null;
+      }
     }
   }
 
   cancelTraining(): void {
+    this.generation += 1;
     this.activeWorker?.terminate();
     this.activeWorker = null;
     this.rejectTraining?.(
       new Error(t("recommendation.training_cancelled")),
     );
     this.rejectTraining = null;
+  }
+
+  async stop(): Promise<void> {
+    this.cancelTraining();
+    await this.activeRebuild?.catch(() => undefined);
   }
 
   isModelStale(): boolean {
@@ -112,9 +123,24 @@ export class RecommendationService {
 
   private async rebuildInternal(
     onProgress?: RecommendationProgress,
+    generation = this.generation,
+  ): Promise<RecommendationRun> {
+    const releaseOperation =
+      this.operationCoordinator?.acquireOperation("recommendation");
+    try {
+      return await this.rebuildInternalWithGeneration(onProgress, generation);
+    } finally {
+      releaseOperation?.();
+    }
+  }
+
+  private async rebuildInternalWithGeneration(
+    onProgress: RecommendationProgress | undefined,
+    generation: number,
   ): Promise<RecommendationRun> {
     onProgress?.(t("ui.reading_recommendation_training_samples"));
     await this.yieldToMainThread();
+    this.ensureGeneration(generation);
     const training = this.repository.listTrainingItems();
     const unread = this.repository.listUnreadItems();
     const positiveCount = training.filter((item) =>
@@ -125,6 +151,7 @@ export class RecommendationService {
 
     if (positiveCount < 2 || negativeCount < 2) {
       const error = t("ui.not_enough_training_samples_at_least_two_positive_and_two_negative_paper");
+      this.ensureGeneration(generation);
       await this.repository.replaceRecommendationResults({
         modelVersion,
         positiveCount,
@@ -160,6 +187,7 @@ export class RecommendationService {
       previousModel.trainingHash === trainingHash &&
       previousModel.featureVersion === FEATURE_VERSION
     ) {
+      this.ensureGeneration(generation);
       const keywords = this.repository.listKeywords(5000);
       const existing = this.repository.listRecommendationScoreHashes();
       const settings = thresholdSettings;
@@ -178,6 +206,7 @@ export class RecommendationService {
       const idf = keywords.map((entry) => entry.idf);
       const weights = keywords.map((entry) => entry.effectiveWeight);
       for (const item of unread) {
+        this.ensureGeneration(generation);
         const contentHash = createHash("sha256")
           .update(buildDocument(item))
           .digest("hex");
@@ -187,6 +216,7 @@ export class RecommendationService {
         const score = scoreItem(
           item,
           indexByKeyword,
+          vocabulary,
           idf,
           weights,
           previousModel.intercept,
@@ -197,6 +227,7 @@ export class RecommendationService {
           changedScores.push(score);
         }
       }
+      this.ensureGeneration(generation);
       await this.repository.updateRecommendationScores(
         previousModel.modelVersion,
         unread.map((item) => item.id),
@@ -219,10 +250,16 @@ export class RecommendationService {
       documents,
       labels,
       overrides,
-      this.yieldToMainThread,
+      async () => {
+        this.ensureGeneration(generation);
+        await this.yieldToMainThread();
+        this.ensureGeneration(generation);
+      },
     );
+    this.ensureGeneration(generation);
     if (features.vocabulary.length === 0) {
       const error = t("ui.the_keyword_model_cannot_be_trained_because_there_are_not_enough_recurri");
+      this.ensureGeneration(generation);
       await this.repository.replaceRecommendationResults({
         modelVersion,
         positiveCount,
@@ -239,7 +276,7 @@ export class RecommendationService {
     const split = stratifiedSplit(labels);
     let trained: TrainedModel;
     try {
-      trained = await trainLogisticInWorker(
+      trained = await trainLogisticWithWorker(
         features.vectors,
         labels,
         positiveCount,
@@ -254,6 +291,7 @@ export class RecommendationService {
       this.activeWorker = null;
       this.rejectTraining = null;
     }
+    this.ensureGeneration(generation);
     const calibration = calibrateThresholds(
       features.vectors,
       labels,
@@ -278,9 +316,11 @@ export class RecommendationService {
     );
     const scores: NonNullable<ReturnType<typeof scoreItem>>[] = [];
     for (const [index, item] of unread.entries()) {
+      this.ensureGeneration(generation);
       const score = scoreItem(
         item,
         indexByKeyword,
+        features.vocabulary,
         features.idf,
         trained.weights,
         trained.intercept,
@@ -292,11 +332,13 @@ export class RecommendationService {
       }
       if ((index + 1) % 25 === 0) {
         await this.yieldToMainThread();
+        this.ensureGeneration(generation);
       }
     }
 
     onProgress?.(t("ui.saving_recommendation_results"));
     await this.yieldToMainThread();
+    this.ensureGeneration(generation);
     await this.repository.replaceRecommendationResults({
       modelVersion,
       positiveCount,
@@ -332,6 +374,12 @@ export class RecommendationService {
       lowCount: counts.low,
       unscoredCount: unread.length - scores.length,
     };
+  }
+
+  private ensureGeneration(generation: number): void {
+    if (generation !== this.generation) {
+      throw new Error(t("recommendation.training_cancelled"));
+    }
   }
 }
 
@@ -455,7 +503,7 @@ export function resolveThresholds(
     : { lowThreshold: suggestedLow, highThreshold: suggestedHigh };
 }
 
-function buildDocument(item: RssItem): string {
+export function buildDocument(item: RssItem): string {
   const freshness = freshnessBucket(item.pubDate);
   const authors = tokenize(item.authors)
     .map((author) => `author:${author}`)
@@ -502,6 +550,48 @@ export function extractDocumentTerms(document: string): string[] {
     }
   }
   return ngrams;
+}
+
+export function vectorizeDocument(
+  document: string,
+  vocabulary: string[],
+  idf: number[],
+): SparseVector {
+  const indexByToken = new Map(
+    vocabulary.map((token, index) => [token, index]),
+  );
+  const counts = new Map<string, number>();
+  for (const token of extractDocumentTerms(document)) {
+    if (indexByToken.has(token)) {
+      counts.set(token, (counts.get(token) ?? 0) + 1);
+    }
+  }
+  const vector: SparseVector = [];
+  let squaredNorm = 0;
+  for (const [token, count] of counts) {
+    const index = indexByToken.get(token);
+    if (index === undefined) {
+      continue;
+    }
+    const value = (1 + Math.log(count)) * (idf[index] ?? 1);
+    vector.push({ index, value });
+    squaredNorm += value * value;
+  }
+  const norm = Math.sqrt(squaredNorm);
+  return norm > 0
+    ? vector.map((entry) => ({
+        index: entry.index,
+        value: entry.value / norm,
+      }))
+    : vector;
+}
+
+export function vectorizeItem(
+  item: RssItem,
+  vocabulary: string[],
+  idf: number[],
+): SparseVector {
+  return vectorizeDocument(buildDocument(item), vocabulary, idf);
 }
 
 function isLatinToken(value: string): boolean {
@@ -558,9 +648,6 @@ async function buildFeatures(
     .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
     .slice(0, 5000)
     .map(([token]) => token);
-  const indexByToken = new Map(
-    vocabulary.map((token, index) => [token, index]),
-  );
   const idf = vocabulary.map(
     (token) =>
       Math.log((documents.length + 1) / ((frequencies.get(token) ?? 0) + 1)) +
@@ -569,38 +656,17 @@ async function buildFeatures(
   const positivePresence = new Array<number>(vocabulary.length).fill(0);
   const negativePresence = new Array<number>(vocabulary.length).fill(0);
   const vectors: SparseVector[] = [];
-  for (const [rowIndex, tokens] of documentTokens.entries()) {
-    const counts = new Map<string, number>();
-    for (const token of tokens) {
-      if (indexByToken.has(token)) {
-        counts.set(token, (counts.get(token) ?? 0) + 1);
-      }
-    }
-    const vector: SparseVector = [];
-    let squaredNorm = 0;
-    for (const [token, count] of counts) {
-      const index = indexByToken.get(token);
-      if (index === undefined) {
-        continue;
-      }
-      const value = (1 + Math.log(count)) * (idf[index] ?? 1);
-      vector.push({ index, value });
-      squaredNorm += value * value;
+  for (const [rowIndex, document] of documents.entries()) {
+    const vector = vectorizeDocument(document, vocabulary, idf);
+    for (const entry of vector) {
+      const index = entry.index;
       if (labels[rowIndex] === 1) {
         positivePresence[index] = (positivePresence[index] ?? 0) + 1;
       } else {
         negativePresence[index] = (negativePresence[index] ?? 0) + 1;
       }
     }
-    const norm = Math.sqrt(squaredNorm);
-    vectors.push(
-      norm > 0
-        ? vector.map((entry) => ({
-            index: entry.index,
-            value: entry.value / norm,
-          }))
-        : vector,
-    );
+    vectors.push(vector);
     if ((rowIndex + 1) % 10 === 0) {
       await yieldToMainThread();
     }
@@ -634,20 +700,42 @@ function isAutomaticStopword(
   return Math.abs(positiveRate - negativeRate) < 0.05;
 }
 
-export async function trainLogisticSparse(
+export function trainLogisticCore(
   vectors: SparseVector[],
   labels: number[],
-  positiveCount: number,
-  negativeCount: number,
-  trainingIndexes = labels.map((_, index) => index),
-): Promise<TrainedModel> {
-  const width = sparseVectorWidth(vectors);
+  trainingIndexes: number[],
+): TrainedModel {
+  let maximumIndex = -1;
+  for (const vector of vectors) {
+    for (const entry of vector) {
+      if (entry.index > maximumIndex) {
+        maximumIndex = entry.index;
+      }
+    }
+  }
+  const width = maximumIndex + 1;
   const weights = new Array<number>(width).fill(0);
   let intercept = 0;
   const learningRate = 0.4;
   const total = trainingIndexes.length;
-  const positiveWeight = total / (2 * positiveCount);
-  const negativeWeight = total / (2 * negativeCount);
+  const positiveCount = trainingIndexes.filter((index) => labels[index] === 1).length;
+  const negativeCount = total - positiveCount;
+  const positiveWeight = total / (2 * Math.max(1, positiveCount));
+  const negativeWeight = total / (2 * Math.max(1, negativeCount));
+  const sigmoid = (value: number): number => {
+    if (value >= 0) {
+      return 1 / (1 + Math.exp(-value));
+    }
+    const exp = Math.exp(value);
+    return exp / (1 + exp);
+  };
+  const dot = (vector: SparseVector): number => {
+    let result = 0;
+    for (const entry of vector) {
+      result += entry.value * (weights[entry.index] ?? 0);
+    }
+    return result;
+  };
   for (let iteration = 0; iteration < 350; iteration += 1) {
     const gradient = new Array<number>(weights.length).fill(0);
     let interceptGradient = 0;
@@ -655,7 +743,7 @@ export async function trainLogisticSparse(
       const vector = vectors[row] ?? [];
       const label = labels[row] ?? 0;
       const sampleWeight = label === 1 ? positiveWeight : negativeWeight;
-      const probability = sigmoid(dotSparse(vector, weights) + intercept);
+      const probability = sigmoid(dot(vector) + intercept);
       const error = (probability - label) * sampleWeight;
       interceptGradient += error;
       for (const entry of vector) {
@@ -673,9 +761,20 @@ export async function trainLogisticSparse(
   return { weights, intercept };
 }
 
+export async function trainLogisticSparse(
+  vectors: SparseVector[],
+  labels: number[],
+  _positiveCount: number,
+  _negativeCount: number,
+  trainingIndexes = labels.map((_, index) => index),
+): Promise<TrainedModel> {
+  return trainLogisticCore(vectors, labels, trainingIndexes);
+}
+
 function scoreItem(
   item: RssItem,
   indexByKeyword: ReadonlyMap<string, number>,
+  vocabulary: string[],
   idf: number[],
   weights: number[],
   intercept: number,
@@ -689,23 +788,19 @@ function scoreItem(
   contentHash: string;
 } | null {
   const document = buildDocument(item);
-  const terms = extractDocumentTerms(document);
-  if (terms.length === 0) {
+  const vector = vectorizeItem(item, vocabulary, idf);
+  if (vector.length === 0) {
     return null;
-  }
-  const counts = new Map<string, number>();
-  for (const term of terms) {
-    counts.set(term, (counts.get(term) ?? 0) + 1);
   }
   const contributions: Array<{ keyword: string; weight: number }> = [];
   let logit = intercept;
-  for (const [keyword, count] of counts) {
-    const index = indexByKeyword.get(keyword);
-    if (index === undefined) {
+  for (const entry of vector) {
+    const keyword = vocabulary[entry.index];
+    const index = keyword === undefined ? undefined : indexByKeyword.get(keyword);
+    if (index === undefined || keyword === undefined) {
       continue;
     }
-    const contribution =
-      (1 + Math.log(count)) * (idf[index] ?? 1) * (weights[index] ?? 0) * 2;
+    const contribution = entry.value * (weights[index] ?? 0);
     logit += contribution;
     contributions.push({ keyword, weight: contribution });
   }
@@ -817,7 +912,7 @@ export function calibrateThresholds(
   };
 }
 
-async function trainLogisticInWorker(
+export async function trainLogisticWithWorker(
   vectors: SparseVector[],
   labels: number[],
   positiveCount: number,
@@ -840,7 +935,7 @@ async function trainLogisticInWorker(
       trainingIndexes,
     );
   }
-  const source = `self.onmessage=async(e)=>{const d=e.data;const v=d.v,l=d.l,ix=d.ix;const w=new Array(d.width).fill(0);let b=0;const total=ix.length,pw=l.length/(2*d.p),nw=l.length/(2*d.n);const sig=x=>x>=0?1/(1+Math.exp(-x)):Math.exp(x)/(1+Math.exp(x));for(let it=0;it<350;it++){const g=new Array(w.length).fill(0);let bg=0;for(const r of ix){let z=b;for(const x of v[r])z+=x.value*(w[x.index]||0);const y=l[r]||0,er=(sig(z)-y)*(y===1?pw:nw);bg+=er;for(const x of v[r])g[x.index]+=er*x.value}for(let c=0;c<w.length;c++)w[c]-=.4*(g[c]/total+.01*w[c]);b-=.4*bg/total}self.postMessage({weights:w,intercept:b})}`;
+  const source = `const trainCore=${trainLogisticCore.toString()};self.onmessage=async(e)=>{const d=e.data;self.postMessage(trainCore(d.v,d.l,d.ix))}`;
   const blobUrl = URL.createObjectURL(
     new Blob([source], { type: "text/javascript" }),
   );
@@ -862,7 +957,6 @@ async function trainLogisticInWorker(
         ix: trainingIndexes,
         p: positiveCount,
         n: negativeCount,
-        width: sparseVectorWidth(vectors),
       });
     });
   } finally {

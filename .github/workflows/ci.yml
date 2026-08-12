@@ -15,12 +15,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Install dependencies
@@ -43,6 +43,17 @@ jobs:
 
       - name: Package
         run: npm run package
+
+      - name: Check packaged bundle and file set
+        shell: bash
+        run: |
+          test "$(find build -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')" = "3"
+          test "$(find build -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" = "0"
+          test -f build/main.js
+          test -f build/manifest.json
+          test -f build/styles.css
+          ! grep -Eiq 'sql[.]js|node_modules/(fs|path)' build/main.js
+          grep -Eq 'node:sqlite' build/main.js
 
       - name: Upload release package
         uses: actions/upload-artifact@v4

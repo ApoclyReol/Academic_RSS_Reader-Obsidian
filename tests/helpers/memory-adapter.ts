@@ -1,3 +1,17 @@
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, relative, resolve } from "node:path";
 import type {
   DataAdapter,
   DataWriteOptions,
@@ -6,67 +20,60 @@ import type {
 } from "obsidian";
 
 export class MemoryAdapter implements DataAdapter {
-  private readonly files = new Map<
-    string,
-    { bytes: Uint8Array; ctime: number; mtime: number }
-  >();
-  private readonly folders = new Set<string>([""]);
+  readonly root = mkdtempSync(join(tmpdir(), "academic-rss-reader-test-"));
 
   getName(): string {
     return "memory";
   }
 
+  getFullPath(path: string): string {
+    return this.resolve(path);
+  }
+
   async exists(path: string): Promise<boolean> {
-    const normalized = clean(path);
-    return this.files.has(normalized) || this.folders.has(normalized);
+    return existsSync(this.resolve(path));
   }
 
   async stat(path: string): Promise<Stat | null> {
-    const normalized = clean(path);
-    const file = this.files.get(normalized);
-    if (file) {
-      return {
-        type: "file",
-        ctime: file.ctime,
-        mtime: file.mtime,
-        size: file.bytes.byteLength,
-      };
+    const resolved = this.resolve(path);
+    if (!existsSync(resolved)) {
+      return null;
     }
-    return this.folders.has(normalized)
-      ? { type: "folder", ctime: 0, mtime: 0, size: 0 }
-      : null;
+    const stat = statSync(resolved);
+    return {
+      type: stat.isDirectory() ? "folder" : "file",
+      ctime: stat.ctimeMs,
+      mtime: stat.mtimeMs,
+      size: stat.isDirectory() ? 0 : stat.size,
+    };
   }
 
   async list(path: string): Promise<ListedFiles> {
     const normalized = clean(path);
-    if (!this.folders.has(normalized)) {
+    const resolved = this.resolve(normalized);
+    if (!existsSync(resolved) || !statSync(resolved).isDirectory()) {
       throw new Error(`Folder does not exist: ${normalized}`);
     }
-    const prefix = normalized ? `${normalized}/` : "";
-    const files = [...this.files.keys()].filter(
-      (candidate) =>
-        candidate.startsWith(prefix) &&
-        !candidate.slice(prefix.length).includes("/"),
-    );
-    const folders = [...this.folders].filter(
-      (candidate) =>
-        candidate.startsWith(prefix) &&
-        candidate !== normalized &&
-        !candidate.slice(prefix.length).includes("/"),
-    );
+    const files: string[] = [];
+    const folders: string[] = [];
+    for (const entry of readdirSync(resolved, { withFileTypes: true })) {
+      const child = normalized ? `${normalized}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        folders.push(child);
+      } else {
+        files.push(child);
+      }
+    }
     return { files, folders };
   }
 
   async read(path: string): Promise<string> {
-    return new TextDecoder().decode(await this.readBinary(path));
+    return readFileSync(this.resolve(path), "utf8");
   }
 
   async readBinary(path: string): Promise<ArrayBuffer> {
-    const file = this.files.get(clean(path));
-    if (!file) {
-      throw new Error(`File does not exist: ${path}`);
-    }
-    return file.bytes.slice().buffer;
+    const bytes = readFileSync(this.resolve(path));
+    return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
   }
 
   async write(
@@ -74,11 +81,7 @@ export class MemoryAdapter implements DataAdapter {
     data: string,
     options?: DataWriteOptions,
   ): Promise<void> {
-    await this.writeBinary(
-      path,
-      new TextEncoder().encode(data).buffer,
-      options,
-    );
+    await this.writeBinary(path, new TextEncoder().encode(data).buffer, options);
   }
 
   async writeBinary(
@@ -86,18 +89,9 @@ export class MemoryAdapter implements DataAdapter {
     data: ArrayBuffer,
     options?: DataWriteOptions,
   ): Promise<void> {
-    const normalized = clean(path);
-    const parent = parentPath(normalized);
-    if (!this.folders.has(parent)) {
-      throw new Error(`Parent folder does not exist: ${parent}`);
-    }
-    const previous = this.files.get(normalized);
-    const now = Date.now();
-    this.files.set(normalized, {
-      bytes: new Uint8Array(data.slice(0)),
-      ctime: options?.ctime ?? previous?.ctime ?? now,
-      mtime: options?.mtime ?? now,
-    });
+    const resolved = this.resolve(path);
+    this.assertParent(resolved);
+    writeFileSync(resolved, Buffer.from(data));
   }
 
   async append(
@@ -105,8 +99,9 @@ export class MemoryAdapter implements DataAdapter {
     data: string,
     options?: DataWriteOptions,
   ): Promise<void> {
-    const current = (await this.exists(path)) ? await this.read(path) : "";
-    await this.write(path, current + data, options);
+    const resolved = this.resolve(path);
+    this.assertParent(resolved);
+    writeFileSync(resolved, `${existsSync(resolved) ? readFileSync(resolved, "utf8") : ""}${data}`);
   }
 
   async appendBinary(
@@ -114,13 +109,12 @@ export class MemoryAdapter implements DataAdapter {
     data: ArrayBuffer,
     options?: DataWriteOptions,
   ): Promise<void> {
-    const current = (await this.exists(path))
-      ? new Uint8Array(await this.readBinary(path))
-      : new Uint8Array();
-    const appended = new Uint8Array(current.byteLength + data.byteLength);
-    appended.set(current);
-    appended.set(new Uint8Array(data), current.byteLength);
-    await this.writeBinary(path, appended.buffer, options);
+    const resolved = this.resolve(path);
+    this.assertParent(resolved);
+    writeFileSync(resolved, Buffer.concat([
+      existsSync(resolved) ? readFileSync(resolved) : Buffer.alloc(0),
+      Buffer.from(data),
+    ]));
   }
 
   async process(
@@ -138,12 +132,12 @@ export class MemoryAdapter implements DataAdapter {
   }
 
   async mkdir(path: string): Promise<void> {
-    const normalized = clean(path);
-    const parent = parentPath(normalized);
-    if (!this.folders.has(parent)) {
-      throw new Error(`Parent folder does not exist: ${parent}`);
+    const resolved = this.resolve(path);
+    const parent = resolve(resolved, "..");
+    if (!existsSync(parent)) {
+      throw new Error(`Parent folder does not exist: ${clean(path)}`);
     }
-    this.folders.add(normalized);
+    mkdirSync(resolved);
   }
 
   async trashSystem(path: string): Promise<boolean> {
@@ -156,50 +150,49 @@ export class MemoryAdapter implements DataAdapter {
   }
 
   async rmdir(path: string, recursive: boolean): Promise<void> {
-    const normalized = clean(path);
-    const prefix = `${normalized}/`;
-    const hasChildren =
-      [...this.files.keys(), ...this.folders].some((candidate) =>
-        candidate.startsWith(prefix),
-      );
-    if (hasChildren && !recursive) {
-      throw new Error(`Folder is not empty: ${normalized}`);
-    }
-    for (const candidate of [...this.files.keys()]) {
-      if (candidate.startsWith(prefix)) {
-        this.files.delete(candidate);
-      }
-    }
-    for (const candidate of [...this.folders]) {
-      if (candidate === normalized || candidate.startsWith(prefix)) {
-        this.folders.delete(candidate);
-      }
-    }
+    rmSync(this.resolve(path), { recursive, force: false });
   }
 
   async remove(path: string): Promise<void> {
-    if (!this.files.delete(clean(path))) {
-      throw new Error(`File does not exist: ${path}`);
-    }
+    rmSync(this.resolve(path));
   }
 
   async rename(path: string, newPath: string): Promise<void> {
-    const source = clean(path);
-    const destination = clean(newPath);
-    const file = this.files.get(source);
-    if (!file || (await this.exists(destination))) {
-      throw new Error(`Cannot rename ${source} to ${destination}`);
+    const source = this.resolve(path);
+    const destination = this.resolve(newPath);
+    if (!existsSync(source) || existsSync(destination)) {
+      throw new Error(`Cannot rename ${path} to ${newPath}`);
     }
-    this.files.set(destination, file);
-    this.files.delete(source);
+    renameSync(source, destination);
   }
 
   async copy(path: string, newPath: string): Promise<void> {
-    const source = this.files.get(clean(path));
-    if (!source || (await this.exists(newPath))) {
+    const source = this.resolve(path);
+    const destination = this.resolve(newPath);
+    if (!existsSync(source) || existsSync(destination)) {
       throw new Error(`Cannot copy ${path} to ${newPath}`);
     }
-    await this.writeBinary(newPath, source.bytes.slice().buffer);
+    this.assertParent(destination);
+    copyFileSync(source, destination);
+  }
+
+  dispose(): void {
+    rmSync(this.root, { recursive: true, force: true });
+  }
+
+  private resolve(path: string): string {
+    const normalized = clean(path);
+    const resolved = resolve(this.root, normalized);
+    if (resolved !== this.root && !resolved.startsWith(`${this.root}/`)) {
+      throw new Error(`Path escapes test Vault: ${path}`);
+    }
+    return resolved;
+  }
+
+  private assertParent(path: string): void {
+    if (!existsSync(resolve(path, ".."))) {
+      throw new Error(`Parent folder does not exist: ${relative(this.root, path)}`);
+    }
   }
 }
 
@@ -208,8 +201,4 @@ function clean(path: string): string {
     .replaceAll("\\", "/")
     .replace(/\/+/g, "/")
     .replace(/^\/+|\/+$/g, "");
-}
-
-function parentPath(path: string): string {
-  return path.split("/").slice(0, -1).join("/");
 }

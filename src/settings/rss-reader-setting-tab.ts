@@ -22,6 +22,9 @@ export class RssReaderSettingTab extends PluginSettingTab {
   private directorySuggest: DirectorySuggest | null = null;
   private inspectionRequest = 0;
   private dataDirectoryDraft: string | null = null;
+  private inspectionTimer: number | null = null;
+  private saveTimer: number | null = null;
+  private saveRefreshReader = false;
 
   constructor(app: App, private readonly plugin: RssReaderPlugin) {
     super(app, plugin);
@@ -173,9 +176,13 @@ export class RssReaderSettingTab extends PluginSettingTab {
   }
 
   override setControlValue(key: string, value: unknown): void | Promise<void> {
+    let refreshReader = false;
     switch (key) {
       case "autoUpdateOnStartup":
         if (typeof value !== "boolean") {
+          return;
+        }
+        if (this.plugin.settings.autoUpdateOnStartup === value) {
           return;
         }
         this.plugin.settings.autoUpdateOnStartup = value;
@@ -188,36 +195,61 @@ export class RssReaderSettingTab extends PluginSettingTab {
         ) {
           return;
         }
+        if (this.plugin.settings.hiddenExpireDays === value) {
+          return;
+        }
         this.plugin.settings.hiddenExpireDays = value;
         break;
       case "targetLanguage":
         if (value !== "zh-CN" && value !== "en") {
           return;
         }
+        if (this.plugin.settings.targetLanguage === value) {
+          return;
+        }
         this.plugin.settings.targetLanguage = value;
+        refreshReader = true;
         break;
       case "llmBaseUrl":
         if (typeof value !== "string") {
           return;
         }
-        this.plugin.settings.llmBaseUrl = value.trim();
+        {
+          const normalized = value.trim();
+          if (this.plugin.settings.llmBaseUrl === normalized) {
+            return;
+          }
+          this.plugin.settings.llmBaseUrl = normalized;
+        }
         break;
       case "llmModel":
         if (typeof value !== "string") {
           return;
         }
-        this.plugin.settings.llmModel = value.trim();
+        {
+          const normalized = value.trim();
+          if (this.plugin.settings.llmModel === normalized) {
+            return;
+          }
+          this.plugin.settings.llmModel = normalized;
+        }
         break;
       case "userInterest":
         if (typeof value !== "string") {
           return;
         }
-        this.plugin.settings.userInterest = value.trim();
+        {
+          const normalized = value.trim();
+          if (this.plugin.settings.userInterest === normalized) {
+            return;
+          }
+          this.plugin.settings.userInterest = normalized;
+        }
         break;
       default:
         return super.setControlValue(key, value);
     }
-    return this.plugin.saveSettings();
+    this.scheduleSaveSettings(refreshReader);
   }
 
   private renderDatabaseSetting(setting: Setting): () => void {
@@ -341,6 +373,11 @@ export class RssReaderSettingTab extends PluginSettingTab {
       }
       suggestToClose?.close();
       this.inspectionRequest += 1;
+      if (this.inspectionTimer !== null) {
+        this.getTimerWindow()?.clearTimeout(this.inspectionTimer);
+        this.inspectionTimer = null;
+      }
+      this.flushScheduledSaveSettings();
     };
   }
 
@@ -369,8 +406,11 @@ export class RssReaderSettingTab extends PluginSettingTab {
       new SecretComponent(this.app, container)
         .setValue(this.plugin.settings.llmSecretId)
         .onChange((value) => {
+          if (this.plugin.settings.llmSecretId === value) {
+            return;
+          }
           this.plugin.settings.llmSecretId = value;
-          this.runAsync(() => this.plugin.saveSettings());
+          this.scheduleSaveSettings();
         }),
     );
   }
@@ -384,8 +424,12 @@ export class RssReaderSettingTab extends PluginSettingTab {
         .setPlaceholder(key === "recommendationLowThreshold" ? "30" : "70")
         .setValue(this.plugin.settings[key]?.toString() ?? "")
         .onChange((value) => {
-          this.plugin.settings[key] = thresholdOrNull(value);
-          this.runAsync(() => this.plugin.saveSettings());
+          const next = thresholdOrNull(value);
+          if (this.plugin.settings[key] === next) {
+            return;
+          }
+          this.plugin.settings[key] = next;
+          this.scheduleSaveSettings(true);
         }),
     );
   }
@@ -449,12 +493,57 @@ export class RssReaderSettingTab extends PluginSettingTab {
     inspection: HTMLElement,
   ): void {
     const request = ++this.inspectionRequest;
-    this.runAsync(async () => {
-      const message = await this.inspectDirectoryText(directory);
-      if (request === this.inspectionRequest && inspection.isConnected) {
-        inspection.setText(message);
-      }
-    });
+    if (this.inspectionTimer !== null) {
+      this.getTimerWindow()?.clearTimeout(this.inspectionTimer);
+    }
+    const timerWindow = this.getTimerWindow();
+    if (!timerWindow) {
+      return;
+    }
+    this.inspectionTimer = timerWindow.setTimeout(() => {
+      this.inspectionTimer = null;
+      this.runAsync(async () => {
+        const message = await this.inspectDirectoryText(directory);
+        if (request === this.inspectionRequest && inspection.isConnected) {
+          inspection.setText(message);
+        }
+      });
+    }, 250);
+  }
+
+  private scheduleSaveSettings(refreshReader = false): void {
+    this.saveRefreshReader ||= refreshReader;
+    const timerWindow = this.getTimerWindow();
+    if (!timerWindow) {
+      const shouldRefreshReader = this.saveRefreshReader;
+      this.saveRefreshReader = false;
+      this.runAsync(() => this.plugin.saveSettings(shouldRefreshReader));
+      return;
+    }
+    if (this.saveTimer !== null) {
+      timerWindow.clearTimeout(this.saveTimer);
+    }
+    this.saveTimer = timerWindow.setTimeout(() => {
+      this.saveTimer = null;
+      const shouldRefreshReader = this.saveRefreshReader;
+      this.saveRefreshReader = false;
+      this.runAsync(() => this.plugin.saveSettings(shouldRefreshReader));
+    }, 250);
+  }
+
+  private flushScheduledSaveSettings(): void {
+    if (this.saveTimer === null) {
+      return;
+    }
+    this.getTimerWindow()?.clearTimeout(this.saveTimer);
+    this.saveTimer = null;
+    const shouldRefreshReader = this.saveRefreshReader;
+    this.saveRefreshReader = false;
+    this.runAsync(() => this.plugin.saveSettings(shouldRefreshReader));
+  }
+
+  private getTimerWindow(): Window | null {
+    return this.app?.workspace?.containerEl?.ownerDocument?.defaultView ?? null;
   }
 
   private async runDatabaseAction(

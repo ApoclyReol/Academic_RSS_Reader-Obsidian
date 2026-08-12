@@ -36,13 +36,13 @@ export async function listDirectorySuggestions(
     : parts.slice(0, -1).join("/");
   const fragment = query.endsWith("/")
     ? ""
-    : parts.at(-1)?.toLocaleLowerCase() ?? "";
+    : (parts[parts.length - 1] ?? "").toLocaleLowerCase();
   try {
     const { folders } = await adapter.list(parent || "/");
     return folders
       .map((folder) => normalizeVaultPath(folder))
       .filter((folder) =>
-        (folder.split("/").at(-1) ?? "")
+        (folder.split("/").slice(-1)[0] ?? "")
           .toLocaleLowerCase()
           .startsWith(fragment),
       )

@@ -9,7 +9,11 @@ import type {
 import type { RssReaderSettings } from "../models/settings";
 import { RssRepository } from "../repositories/rss-repository";
 import type { DatabaseOperationCoordinator } from "./database-operation-coordinator";
-import { parseFeed } from "./rss-parser";
+import {
+  MAX_FEED_XML_BYTES,
+  parseFeed,
+  validateFeedXml,
+} from "./rss-parser";
 import {
   nextAutomaticAttempt,
   parseRetryAfter,
@@ -18,6 +22,7 @@ import {
 export interface FeedUpdateHooks {
   onSettingsChanged(): Promise<void>;
   onFeedsUpdated(): Promise<void>;
+  onCancelled?(): void;
 }
 
 export interface FeedUpdateProgress {
@@ -29,7 +34,11 @@ export interface FeedUpdateProgress {
 export interface FeedUpdateOptions {
   automatic?: boolean;
   onProgress?: (progress: FeedUpdateProgress) => void;
+  onSkipped?: (count: number) => void;
 }
+
+type TimerWindow = Pick<Window, "setTimeout"> &
+  Partial<Pick<Window, "clearTimeout">>;
 
 interface FetchResult {
   status: number;
@@ -38,15 +47,18 @@ interface FetchResult {
   lastModified: string | null;
 }
 
+const RECENT_AUTOMATIC_SUCCESS_WINDOW_MS = 60 * 60 * 1000;
+
 export class FeedService {
   private updateInProgress = false;
   private updateGeneration = 0;
+  private activeUpdate: Promise<UpdateResult[]> | null = null;
 
   constructor(
     private readonly repository: RssRepository,
     private readonly getSettings: () => RssReaderSettings,
     private readonly hooks: FeedUpdateHooks,
-    private readonly timerWindow: Pick<Window, "setTimeout">,
+    private readonly timerWindow: TimerWindow,
     private readonly operationCoordinator?: DatabaseOperationCoordinator,
   ) {}
 
@@ -56,6 +68,12 @@ export class FeedService {
 
   cancelUpdates(): void {
     this.updateGeneration += 1;
+    this.hooks.onCancelled?.();
+  }
+
+  async stop(): Promise<void> {
+    this.cancelUpdates();
+    await this.activeUpdate?.catch(() => undefined);
   }
 
   validateFeed(input: FeedInput): FeedInput {
@@ -73,7 +91,12 @@ export class FeedService {
     if (!["http:", "https:"].includes(parsed.protocol)) {
       throw new Error(t("ui.the_rss_url_must_be_a_valid_http_or_https_url"));
     }
-    return { name, url, enabled: input.enabled };
+    return {
+      name,
+      journalName: input.journalName?.trim() || name,
+      url,
+      enabled: input.enabled,
+    };
   }
 
   async addFeed(input: FeedInput): Promise<number> {
@@ -91,41 +114,85 @@ export class FeedService {
     if (this.updateInProgress) {
       throw new Error(t("ui.a_feed_update_is_already_in_progress"));
     }
-    const releaseOperation =
-      this.operationCoordinator?.acquireOperation("feed-update");
     this.updateInProgress = true;
     const generation = ++this.updateGeneration;
+    const update = this.updateFeedsInternal(
+      feedIds,
+      options,
+      generation,
+    );
+    this.activeUpdate = update;
+    try {
+      return await update;
+    } finally {
+      if (this.activeUpdate === update) {
+        this.activeUpdate = null;
+      }
+      this.updateInProgress = false;
+    }
+  }
+
+  private async updateFeedsInternal(
+    feedIds: number[] | undefined,
+    options: FeedUpdateOptions,
+    generation: number,
+  ): Promise<UpdateResult[]> {
+    const releaseOperation =
+      this.operationCoordinator?.acquireOperation("feed-update");
     const startedAt = new Date().toISOString();
     try {
       const now = Date.now();
-      const feeds = this.repository
+      const candidates = this.repository
         .listFeeds(true)
         .filter((feed) =>
           feedIds ? feedIds.includes(feed.id) : feed.enabled,
-        )
-        .filter(
-          (feed) =>
-            !options.automatic ||
-            !feed.nextAutoUpdateAt ||
-            Date.parse(feed.nextAutoUpdateAt) <= now,
         );
+      const recentlyUpdated = options.automatic
+        ? candidates.filter((feed) => this.wasRecentlySuccessful(feed, now))
+        : [];
+      const recentlyUpdatedIds = new Set(
+        recentlyUpdated.map((feed) => feed.id),
+      );
+      const feeds = candidates.filter((feed) =>
+        !options.automatic ||
+        (
+          !recentlyUpdatedIds.has(feed.id) &&
+          (
+            !feed.nextAutoUpdateAt ||
+            Date.parse(feed.nextAutoUpdateAt) <= now
+          )
+        )
+      );
+      options.onSkipped?.(recentlyUpdated.length);
+      if (feeds.length === 0) {
+        return [];
+      }
       const results = await this.updateConcurrently(
         feeds,
         generation,
         options.onProgress,
       );
+      if (generation !== this.updateGeneration) {
+        return results;
+      }
       const cutoff = new Date(
         Date.now() -
           Math.max(1, this.getSettings().hiddenExpireDays) * 86_400_000,
       ).toISOString();
       const expired = await this.repository.expireHiddenBefore(cutoff);
+      if (generation !== this.updateGeneration) {
+        return results;
+      }
       await this.repository.setMetadata(
         "last_update_summary",
         JSON.stringify({
           startedAt,
           finishedAt: new Date().toISOString(),
           totalFeeds: results.length,
-          successFeeds: results.filter((result) => !result.error).length,
+          recentlyUpdatedSkippedFeeds: recentlyUpdated.length,
+          successFeeds: results.filter(
+            (result) => !result.error && !result.cancelled,
+          ).length,
           totalNewItems: results.reduce(
             (sum, result) => sum + result.newItems,
             0,
@@ -134,13 +201,29 @@ export class FeedService {
           results,
         }),
       );
+      if (generation !== this.updateGeneration) {
+        return results;
+      }
       await this.hooks.onFeedsUpdated();
+      if (generation !== this.updateGeneration) {
+        return results;
+      }
       await this.hooks.onSettingsChanged();
       return results;
     } finally {
-      this.updateInProgress = false;
       releaseOperation?.();
     }
+  }
+
+  private wasRecentlySuccessful(feed: Feed, now: number): boolean {
+    if (!feed.lastSuccessAt) {
+      return false;
+    }
+    const lastSuccess = parseStoredTimestamp(feed.lastSuccessAt);
+    const elapsed = now - lastSuccess;
+    return Number.isFinite(lastSuccess) &&
+      elapsed >= 0 &&
+      elapsed < RECENT_AUTOMATIC_SUCCESS_WINDOW_MS;
   }
 
   private async updateConcurrently(
@@ -150,7 +233,12 @@ export class FeedService {
   ): Promise<UpdateResult[]> {
     const groups = new Map<string, Feed[]>();
     for (const feed of feeds) {
-      const host = new URL(feed.url).hostname.toLocaleLowerCase();
+      let host: string;
+      try {
+        host = new URL(feed.url).hostname.toLocaleLowerCase();
+      } catch {
+        host = `invalid-${feed.id}`;
+      }
       const group = groups.get(host) ?? [];
       group.push(feed);
       groups.set(host, group);
@@ -269,26 +357,42 @@ export class FeedService {
         return this.emptyResult(feed.id, feed.name, null, true);
       }
       if (response.status === 304) {
+        if (generation !== this.updateGeneration) {
+          return this.emptyResult(feed.id, feed.name, null, true);
+        }
         await this.repository.updateFeedCheck(feed.id, null, {
           success: true,
           etag: response.etag,
           lastModified: response.lastModified,
         });
+        if (generation !== this.updateGeneration) {
+          return this.emptyResult(feed.id, feed.name, null, true);
+        }
         return {
           ...this.emptyResult(feed.id, feed.name, null),
           notModified: true,
         };
       }
-      const parsed = parseFeed(response.text, feed.name);
+      validateFeedXml(response.text);
+      const parsed = parseFeed(response.text, feed.name, feed.journalName);
+      if (generation !== this.updateGeneration) {
+        return this.emptyResult(feed.id, feed.name, null, true);
+      }
       const stored = await this.repository.upsertParsedItems(
         feed.id,
         parsed.items,
       );
+      if (generation !== this.updateGeneration) {
+        return this.emptyResult(feed.id, feed.name, null, true);
+      }
       await this.repository.updateFeedCheck(feed.id, null, {
         success: true,
         etag: response.etag,
         lastModified: response.lastModified,
       });
+      if (generation !== this.updateGeneration) {
+        return this.emptyResult(feed.id, feed.name, null, true);
+      }
       return {
         feedId: feed.id,
         feedName: feed.name,
@@ -305,10 +409,16 @@ export class FeedService {
         return this.emptyResult(feed.id, feed.name, null, true);
       }
       const message = error instanceof Error ? error.message : String(error);
+      if (generation !== this.updateGeneration) {
+        return this.emptyResult(feed.id, feed.name, null, true);
+      }
       const failureCount = feed.consecutiveFailures + 1;
       await this.repository.updateFeedCheck(feed.id, message, {
         nextAutoUpdateAt: nextAutomaticAttempt(failureCount),
       });
+      if (generation !== this.updateGeneration) {
+        return this.emptyResult(feed.id, feed.name, null, true);
+      }
       return this.emptyResult(feed.id, feed.name, message);
     }
   }
@@ -317,6 +427,19 @@ export class FeedService {
     feed: Feed,
     generation: number,
   ): Promise<FetchResult> {
+    let feedUrl: URL;
+    try {
+      feedUrl = new URL(feed.url);
+    } catch {
+      throw new NonRetryableError(
+        t("ui.the_rss_url_must_be_a_valid_http_or_https_url"),
+      );
+    }
+    if (!["http:", "https:"].includes(feedUrl.protocol)) {
+      throw new NonRetryableError(
+        t("ui.the_rss_url_must_be_a_valid_http_or_https_url"),
+      );
+    }
     let lastError: unknown;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       if (generation !== this.updateGeneration) {
@@ -326,7 +449,7 @@ export class FeedService {
         const headers: Record<string, string> = {
           Accept:
             "application/rss+xml, application/atom+xml, application/xml, text/xml, */*",
-          "User-Agent": "Academic-RSS-Reader/1.3.0",
+          "User-Agent": "Academic-RSS-Reader/1.4.0",
         };
         if (feed.etag) {
           headers["If-None-Match"] = feed.etag;
@@ -344,6 +467,14 @@ export class FeedService {
           response.status === 304 ||
           (response.status >= 200 && response.status < 300)
         ) {
+          if (
+            response.status !== 304 &&
+            new TextEncoder().encode(response.text).byteLength > MAX_FEED_XML_BYTES
+          ) {
+            throw new NonRetryableError(
+              t("feed.response_too_large"),
+            );
+          }
           return {
             status: response.status,
             text: response.text,
@@ -355,9 +486,13 @@ export class FeedService {
           response.status,
         );
         if (!retryable) {
-          throw new NonRetryableError(`HTTP ${response.status}`);
+          throw new NonRetryableError(t("feed.http_error", {
+            status: response.status,
+          }));
         }
-        lastError = new Error(`HTTP ${response.status}`);
+        lastError = new Error(t("feed.http_error", {
+          status: response.status,
+        }));
         if (attempt < 2) {
           const retryAfter = [429, 503].includes(response.status)
             ? parseRetryAfter(header(response.headers, "retry-after"))
@@ -366,6 +501,9 @@ export class FeedService {
             retryAfter ?? 1_000 * 2 ** attempt,
             this.timerWindow,
           );
+          if (generation !== this.updateGeneration) {
+            throw new Error(t("ui.feed_update_cancelled"));
+          }
         }
       } catch (error) {
         lastError = error;
@@ -374,6 +512,9 @@ export class FeedService {
         }
         if (attempt < 2) {
           await delay(1_000 * 2 ** attempt, this.timerWindow);
+          if (generation !== this.updateGeneration) {
+            throw new Error(t("ui.feed_update_cancelled"));
+          }
         }
       }
     }
@@ -402,6 +543,13 @@ export class FeedService {
   }
 }
 
+function parseStoredTimestamp(value: string): number {
+  const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)
+    ? `${value.replace(" ", "T")}Z`
+    : value;
+  return Date.parse(normalized);
+}
+
 class NonRetryableError extends Error {}
 class HttpTimeoutError extends Error {}
 
@@ -418,26 +566,32 @@ function header(
 function withTimeout<T>(
   promise: Promise<T>,
   milliseconds: number,
-  timerWindow: Pick<Window, "setTimeout">,
+  timerWindow: TimerWindow,
 ): Promise<T> {
   return new Promise((resolve, reject) => {
     let settled = false;
-    timerWindow.setTimeout(() => {
+    const timeout = timerWindow.setTimeout(() => {
       if (!settled) {
         settled = true;
         reject(new HttpTimeoutError(t("ui.feed_request_timed_out")));
       }
     }, milliseconds);
+    const clearTimeout = timerWindow.clearTimeout;
+    const clear = () => {
+      clearTimeout?.(timeout);
+    };
     void promise.then(
       (value) => {
         if (!settled) {
           settled = true;
+          clear();
           resolve(value);
         }
       },
       (error: unknown) => {
         if (!settled) {
           settled = true;
+          clear();
           reject(
             error instanceof Error ? error : new Error(String(error)),
           );
@@ -463,9 +617,7 @@ function decodeXmlEntities(value: string): string {
 
 function delay(
   milliseconds: number,
-  timerWindow: Pick<Window, "setTimeout">,
+  timerWindow: TimerWindow,
 ): Promise<void> {
-  return new Promise((resolve) =>
-    timerWindow.setTimeout(resolve, milliseconds),
-  );
+  return new Promise((resolve) => timerWindow.setTimeout(resolve, milliseconds));
 }

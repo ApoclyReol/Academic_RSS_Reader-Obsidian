@@ -1,8 +1,14 @@
-import type { BindParams, Database, SqlValue } from "sql.js";
-
-import { RssDatabase } from "../database/database";
+import {
+  RssDatabase,
+  type Database,
+  type SqlValue,
+} from "../database/database";
 import { t } from "../i18n";
-import { stableGuid } from "../services/rss-parser";
+import {
+  canonicalizeLink,
+  publisherIdentity,
+  stableGuid,
+} from "../services/rss-parser";
 import {
   ITEM_STATUSES,
   type Feed,
@@ -19,6 +25,34 @@ import {
 } from "../models/domain";
 
 type Row = Record<string, SqlValue>;
+
+function textValue(value: SqlValue, fallback = ""): string {
+  return typeof value === "string" || typeof value === "number" ||
+    typeof value === "bigint"
+    ? String(value)
+    : fallback;
+}
+
+const ITEM_JOURNAL_SELECT = `
+  COALESCE((
+    SELECT GROUP_CONCAT(journal, ' / ')
+    FROM (
+      SELECT journal, MIN(priority) AS priority
+      FROM (
+        SELECT NULLIF(i.article_journal,'') AS journal, 0 AS priority
+        WHERE NULLIF(i.article_journal,'') IS NOT NULL
+        UNION ALL
+        SELECT NULLIF(f.journal_name,''), 1
+        FROM item_feeds x JOIN feeds f ON f.id=x.feed_id
+        WHERE x.item_id=i.id AND NULLIF(f.journal_name,'') IS NOT NULL
+      )
+      GROUP BY journal
+      ORDER BY priority, journal COLLATE NOCASE
+    )
+  ), '') AS journal,
+  COALESCE((SELECT GROUP_CONCAT(f.name,' ')
+    FROM item_feeds x JOIN feeds f ON f.id=x.feed_id
+    WHERE x.item_id=i.id),'') AS feed_names`;
 
 function statusPriority(status: ItemStatus): number {
   return {
@@ -43,7 +77,7 @@ export class RssRepository {
     }
     const rows = this.database.query<Row>(
       `
-      SELECT i.*, f.name AS feed_name,
+      SELECT i.*, f.name AS feed_name, f.journal_name AS feed_journal,
              (SELECT COUNT(*) FROM item_feeds x WHERE x.item_id=i.id) AS feed_count
       FROM items i
       LEFT JOIN item_feeds ifd ON ifd.item_id=i.id
@@ -59,6 +93,7 @@ export class RssRepository {
         status: ItemStatus;
         lastSeenAt: string;
         feedName: string;
+        link: string;
         isLegacyGuid: boolean;
       }>
     >();
@@ -66,49 +101,51 @@ export class RssRepository {
       if (Number(row.feed_count) !== 1) {
         continue;
       }
-      const feedName = String(row.feed_name ?? row.journal ?? "");
+      const feedName = textValue(row.feed_name);
+      const articleJournal = textValue(row.article_journal ?? row.journal);
+      const feedJournal = textValue(row.feed_journal);
       const identity = {
         id: Number(row.id),
-        currentGuid: String(row.stable_guid),
-        status: String(row.item_status) as ItemStatus,
-        lastSeenAt: String(row.last_seen_at ?? ""),
+        currentGuid: textValue(row.stable_guid),
+        status: textValue(row.item_status) as ItemStatus,
+        lastSeenAt: textValue(row.last_seen_at),
         feedName,
+        link: textValue(row.link),
         isLegacyGuid:
-          String(row.stable_guid).startsWith("doi:") ||
-          String(row.stable_guid).startsWith("cnki-local:"),
+          textValue(row.stable_guid).startsWith("doi:") ||
+          textValue(row.stable_guid).startsWith("cnki-local:") ||
+          textValue(row.stable_guid).startsWith("rss:") ||
+          textValue(row.stable_guid).startsWith("legacy:"),
       };
-      const guid = stableGuid({
-        title: String(row.title ?? ""),
-        journal: feedName,
-        year: String(row.year ?? ""),
-        authors: String(row.authors ?? ""),
-        doi: String(row.doi ?? ""),
+      const canonicalGuid = stableGuid({
+        title: textValue(row.title),
+        journal: articleJournal || feedJournal || feedName,
+        year: textValue(row.year),
+        authors: textValue(row.authors),
+        doi: textValue(row.doi),
+        link: textValue(row.link),
       });
-      const group = identities.get(guid) ?? [];
+      const link = canonicalizeLink(textValue(row.link));
+      const publisherId = publisherIdentity(link);
+      const doi = textValue(row.doi)
+        .trim()
+        .toLocaleLowerCase()
+        .replace(/^doi:\s*/i, "");
+      const repairIdentity = doi
+        ? `doi:${doi}`
+        : publisherId ||
+          (link ? `url:${link}|${textValue(row.title_norm)}` : canonicalGuid);
+      const group = identities.get(repairIdentity) ?? [];
       group.push(identity);
-      identities.set(guid, group);
-      if (!identity.isLegacyGuid && !String(row.doi ?? "")) {
-        const noAuthorGuid = stableGuid({
-          title: String(row.title ?? ""),
-          journal: feedName,
-          year: String(row.year ?? ""),
-          authors: "",
-          doi: "",
-        });
-        if (noAuthorGuid !== guid) {
-          const fallbackGroup = identities.get(noAuthorGuid) ?? [];
-          fallbackGroup.push(identity);
-          identities.set(noAuthorGuid, fallbackGroup);
-        }
-      }
+      identities.set(repairIdentity, group);
     }
 
     return this.database.write((db) => {
       let mergedGroups = 0;
       let removedItems = 0;
-      const rekeyedItems = 0;
+      let rekeyedItems = 0;
       const removedIds = new Set<number>();
-      for (const [guid, candidates] of identities) {
+      for (const candidates of identities.values()) {
         const unique = [
           ...new Map(
             candidates
@@ -122,17 +159,15 @@ export class RssRepository {
             right.lastSeenAt.localeCompare(left.lastSeenAt) ||
             left.id - right.id,
         );
-        const canonicalOwner = unique.find(
-          (item) => item.currentGuid === guid,
-        );
-        if (!canonicalOwner) {
+        if (unique.length === 0) {
           continue;
         }
-        const winner = canonicalOwner;
+        const winner = ranked[0];
+        if (!winner) {
+          continue;
+        }
         const preservedStatus = ranked[0]?.status ?? winner.status;
-        const losers = unique.filter(
-          (item) => item.id !== winner.id && !item.isLegacyGuid,
-        );
+        const losers = unique.filter((item) => item.id !== winner.id);
         if (losers.length > 0) {
           const placeholders = losers
             .map((_, index) => `$loser${index}`)
@@ -266,9 +301,10 @@ export class RssRepository {
   async addFeed(input: FeedInput): Promise<number> {
     return this.database.write((db) => {
       db.run(
-        "INSERT INTO feeds(name,url,enabled) VALUES ($name,$url,$enabled)",
+        "INSERT INTO feeds(name,journal_name,url,enabled) VALUES ($name,$journalName,$url,$enabled)",
         {
           $name: input.name,
+          $journalName: input.journalName?.trim() || input.name,
           $url: input.url,
           $enabled: input.enabled ? 1 : 0,
         },
@@ -282,22 +318,17 @@ export class RssRepository {
       db.run(
         `
         UPDATE feeds
-        SET name=$name, url=$url, enabled=$enabled, updated_at=CURRENT_TIMESTAMP
+        SET name=$name, journal_name=$journalName, url=$url, enabled=$enabled,
+            updated_at=CURRENT_TIMESTAMP
         WHERE id=$id
         `,
         {
           $id: feedId,
           $name: input.name,
+          $journalName: input.journalName?.trim() || input.name,
           $url: input.url,
           $enabled: input.enabled ? 1 : 0,
         },
-      );
-      db.run(
-        `
-        UPDATE items SET journal=$name
-        WHERE id IN (SELECT item_id FROM item_feeds WHERE feed_id=$id)
-        `,
-        { $id: feedId, $name: input.name },
       );
     });
   }
@@ -398,7 +429,7 @@ export class RssRepository {
               title=COALESCE(NULLIF($title,''),title),
               title_norm=COALESCE(NULLIF($titleNorm,''),title_norm),
               authors=COALESCE(NULLIF($authors,''),authors),
-              journal=COALESCE(NULLIF($journal,''),journal),
+              article_journal=COALESCE(NULLIF($journal,''),article_journal),
               year=COALESCE(NULLIF($year,''),year),
               doi=COALESCE(NULLIF($doi,''),doi),
               link=COALESCE(NULLIF($link,''),link),
@@ -406,32 +437,18 @@ export class RssRepository {
               summary=COALESCE(NULLIF($summary,''),summary)
             WHERE id=$id
             `,
-            this.parsedItemParams(item, itemId) as BindParams,
-          );
-          db.run(
-            `
-            UPDATE items SET stable_guid=$stableGuid
-            WHERE id=$id
-              AND NOT EXISTS (
-                SELECT 1 FROM items other
-                WHERE other.stable_guid=$stableGuid AND other.id<>$id
-              )
-            `,
-            {
-              $id: itemId,
-              $stableGuid: item.stableGuid,
-            },
+            this.parsedItemParams(item, itemId),
           );
         } else {
           db.run(
             `
             INSERT INTO items(
-              stable_guid,title,title_norm,authors,journal,year,doi,link,pub_date,summary
+              stable_guid,title,title_norm,authors,article_journal,year,doi,link,pub_date,summary
             ) VALUES (
               $stableGuid,$title,$titleNorm,$authors,$journal,$year,$doi,$link,$pubDate,$summary
             )
             `,
-            this.parsedItemParams(item) as BindParams,
+            this.parsedItemParams(item),
           );
           itemId = this.lastInsertId(db);
           insertedIds.push(itemId);
@@ -475,7 +492,7 @@ export class RssRepository {
       .query<Row>(
         `
         SELECT
-          i.*,
+          i.*, ${ITEM_JOURNAL_SELECT},
           rs.final_tier, rs.keyword_score, rs.llm_tier, rs.matched_keywords,
           tt.translated_text AS translated_title, tt.status AS title_translation_status,
           ta.translated_text AS translated_abstract, ta.status AS abstract_translation_status
@@ -504,7 +521,7 @@ export class RssRepository {
   getItem(itemId: number, targetLanguage = "zh-CN"): RssItem | null {
     const row = this.database.get<Row>(
       `
-      SELECT i.*,rs.final_tier,rs.keyword_score,rs.llm_tier,rs.matched_keywords,
+      SELECT i.*,${ITEM_JOURNAL_SELECT},rs.final_tier,rs.keyword_score,rs.llm_tier,rs.matched_keywords,
         tt.translated_text AS translated_title,tt.status AS title_translation_status,
         ta.translated_text AS translated_abstract,ta.status AS abstract_translation_status
       FROM items i
@@ -668,7 +685,7 @@ export class RssRepository {
             WHEN translations.source_hash=excluded.source_hash
             THEN translations.translated_at ELSE NULL END
         `,
-        this.translationParams(record) as BindParams,
+        this.translationParams(record),
       );
     });
   }
@@ -686,7 +703,23 @@ export class RssRepository {
           translated_at=$translatedAt
         WHERE item_id=$itemId AND field=$field AND target_language=$targetLanguage
         `,
-        this.translationParams(record) as BindParams,
+        this.translationParams(record),
+      );
+    });
+  }
+
+  async deleteTranslationTask(
+    itemId: number,
+    field: TranslationField,
+    targetLanguage: string,
+  ): Promise<void> {
+    await this.database.write((db) => {
+      db.run(
+        `
+        DELETE FROM translations
+        WHERE item_id=$itemId AND field=$field AND target_language=$targetLanguage
+        `,
+        { $itemId: itemId, $field: field, $targetLanguage: targetLanguage },
       );
     });
   }
@@ -695,9 +728,7 @@ export class RssRepository {
     return this.database
       .query<Row>(
         `
-        SELECT i.*,COALESCE((SELECT GROUP_CONCAT(f.name,' ')
-          FROM item_feeds x JOIN feeds f ON f.id=x.feed_id
-          WHERE x.item_id=i.id),'') AS feed_names,
+        SELECT i.*,${ITEM_JOURNAL_SELECT},
           NULL AS final_tier,NULL AS keyword_score,NULL AS llm_tier,
           '[]' AS matched_keywords,NULL AS translated_title,NULL AS translated_abstract,
           NULL AS title_translation_status,NULL AS abstract_translation_status
@@ -713,9 +744,7 @@ export class RssRepository {
     return this.database
       .query<Row>(
         `
-        SELECT i.*,COALESCE((SELECT GROUP_CONCAT(f.name,' ')
-          FROM item_feeds x JOIN feeds f ON f.id=x.feed_id
-          WHERE x.item_id=i.id),'') AS feed_names,
+        SELECT i.*,${ITEM_JOURNAL_SELECT},
           NULL AS final_tier,NULL AS keyword_score,NULL AS llm_tier,
           '[]' AS matched_keywords,NULL AS translated_title,NULL AS translated_abstract,
           NULL AS title_translation_status,NULL AS abstract_translation_status
@@ -738,7 +767,7 @@ export class RssRepository {
     `) ?? {};
     const unread = this.countItems({ status: "unread" });
     const model = this.database.get<Row>(
-      "SELECT * FROM recommendation_models ORDER BY created_at DESC LIMIT 1",
+      "SELECT * FROM recommendation_models ORDER BY created_at DESC, rowid DESC LIMIT 1",
     );
     const scored =
       Number(counts.high ?? 0) +
@@ -756,7 +785,7 @@ export class RssRepository {
       createdAt: model ? String(model.created_at) : null,
       intercept: Number(model?.intercept ?? 0),
       trainingHash: model?.training_hash
-        ? String(model.training_hash)
+        ? textValue(model.training_hash)
         : null,
       validationAccuracy:
         model?.validation_accuracy === null ||
@@ -778,7 +807,7 @@ export class RssRepository {
       featureVersion: Number(model?.feature_version ?? 1),
       isStale: false,
       errorMessage: model?.error_message
-        ? String(model.error_message)
+        ? textValue(model.error_message)
         : null,
     };
   }
@@ -951,6 +980,16 @@ export class RssRepository {
           $featureVersion: input.featureVersion ?? 1,
         },
       );
+      db.run(
+        `
+        DELETE FROM recommendation_models
+        WHERE rowid NOT IN (
+          SELECT rowid FROM recommendation_models
+          ORDER BY created_at DESC, rowid DESC
+          LIMIT 10
+        )
+        `,
+      );
       if (input.errorMessage) {
         return;
       }
@@ -1018,7 +1057,7 @@ export class RssRepository {
     return this.database
       .query<Row>(
         `
-        SELECT i.*,rs.final_tier,rs.keyword_score,rs.llm_tier,rs.matched_keywords,
+        SELECT i.*,${ITEM_JOURNAL_SELECT},rs.final_tier,rs.keyword_score,rs.llm_tier,rs.matched_keywords,
           NULL AS translated_title,NULL AS translated_abstract,
           NULL AS title_translation_status,NULL AS abstract_translation_status
         FROM items i
@@ -1103,7 +1142,10 @@ export class RssRepository {
         (
           LOWER(i.title) LIKE $query OR LOWER(COALESCE(i.authors,'')) LIKE $query OR
           LOWER(COALESCE(i.summary,'')) LIKE $query OR
-          LOWER(COALESCE(i.journal,'')) LIKE $query OR
+          LOWER(COALESCE(i.article_journal,'')) LIKE $query OR
+          LOWER(COALESCE((SELECT GROUP_CONCAT(DISTINCT f.journal_name)
+            FROM item_feeds x JOIN feeds f ON f.id=x.feed_id
+            WHERE x.item_id=i.id),'')) LIKE $query OR
           LOWER(COALESCE(i.doi,'')) LIKE $query
         )
       `);
@@ -1137,14 +1179,16 @@ export class RssRepository {
       ],
       ...(item.doi
         ? [[
-            "SELECT id FROM items WHERE doi=$value ORDER BY id DESC LIMIT 1",
-            { $value: item.doi },
+            "SELECT id FROM items WHERE LOWER(COALESCE(doi,''))=LOWER($value) ORDER BY id DESC LIMIT 1",
+            { $value: item.doi.replace(/^doi:\s*/i, "") },
           ]]
         : []),
       ...(item.link
         ? [[
-            "SELECT id FROM items WHERE link=$value ORDER BY id DESC LIMIT 1",
-            { $value: item.link },
+            `SELECT id FROM items
+             WHERE link=$value AND title_norm=$titleNorm
+             ORDER BY id DESC LIMIT 1`,
+            { $value: item.link, $titleNorm: item.titleNorm },
           ]]
         : []),
     ] as Array<[string, Record<string, unknown>]>) {
@@ -1154,13 +1198,25 @@ export class RssRepository {
       }
     }
 
+    if (item.link) {
+      const candidates = this.databaseItemsByTitleAndLink(db, item);
+      if (candidates.length === 1) {
+        return candidates[0]!;
+      }
+    }
+
     if (item.authors) {
       const statement = db.prepare(
         `
-        SELECT id,journal FROM items
-        WHERE title_norm=$title AND COALESCE(authors,'')=$authors
-          AND COALESCE(year,'')=$year
-        ORDER BY id DESC
+        SELECT i.id,i.article_journal,i.link,
+          COALESCE(GROUP_CONCAT(DISTINCT f.journal_name), '') AS feed_journals
+        FROM items i
+        LEFT JOIN item_feeds ifd ON ifd.item_id=i.id
+        LEFT JOIN feeds f ON f.id=ifd.feed_id
+        WHERE i.title_norm=$title AND COALESCE(i.authors,'')=$authors
+          AND COALESCE(i.year,'')=$year
+        GROUP BY i.id
+        ORDER BY i.id DESC
         `,
       );
       statement.bind({
@@ -1168,20 +1224,115 @@ export class RssRepository {
         $authors: item.authors,
         $year: item.year,
       });
-      const rows: Array<{ id: number; journal: string }> = [];
+      const rows: Array<{
+        id: number;
+        article_journal: string;
+        feed_journals: string;
+        link: string;
+      }> = [];
       while (statement.step()) {
-        rows.push(statement.getAsObject() as { id: number; journal: string });
+        rows.push(statement.getAsObject() as {
+          id: number;
+          article_journal: string;
+          feed_journals: string;
+          link: string;
+        });
       }
       statement.free();
-      if (rows.length === 1) {
-        return Number(rows[0]?.id);
+      const compatibleRows = rows.filter((row) =>
+        this.publisherIdentitiesDoNotConflict(row.link, item.link)
+      );
+      if (compatibleRows.length === 1) {
+        return Number(compatibleRows[0]?.id);
       }
-      const exact = rows.filter((row) => row.journal === item.journal);
+      const exact = compatibleRows.filter((row) =>
+        this.journalCandidates(row).includes(item.journal)
+      );
       if (exact.length === 1) {
         return Number(exact[0]?.id);
       }
+    } else {
+      const rows = this.database.query<Row>(
+        `
+        SELECT i.id,i.article_journal,i.link,
+          COALESCE(GROUP_CONCAT(DISTINCT f.journal_name), '') AS feed_journals
+        FROM items i
+        LEFT JOIN item_feeds ifd ON ifd.item_id=i.id
+        LEFT JOIN feeds f ON f.id=ifd.feed_id
+        WHERE i.title_norm=$title AND COALESCE(i.authors,'')=''
+          AND COALESCE(i.year,'')=$year
+        GROUP BY i.id
+        ORDER BY i.id DESC
+        `,
+        { $title: item.titleNorm, $year: item.year },
+      );
+      const compatibleRows = rows.filter((row) =>
+        this.publisherIdentitiesDoNotConflict(textValue(row.link), item.link)
+      );
+      const exact = compatibleRows.filter((row) =>
+        this.journalCandidates(row).includes(item.journal)
+      );
+      if (exact.length === 1) {
+        return Number(exact[0]?.id);
+      }
+      if (
+        compatibleRows.length === 1 &&
+        this.journalCandidates(compatibleRows[0]!).length === 0
+      ) {
+        return Number(compatibleRows[0]?.id);
+      }
     }
     return null;
+  }
+
+  private databaseItemsByTitleAndLink(
+    db: Database,
+    item: ParsedItem,
+  ): number[] {
+    const statement = db.prepare(
+      `SELECT id,link FROM items WHERE title_norm=$title AND link IS NOT NULL`,
+    );
+    statement.bind({ $title: item.titleNorm });
+    const matches: number[] = [];
+    const incomingPublisherIdentity = publisherIdentity(item.link);
+    while (statement.step()) {
+      const row = statement.getAsObject() as { id: number; link: string };
+      const storedLink = textValue(row.link);
+      if (
+        canonicalizeLink(storedLink) === item.link ||
+        (
+          incomingPublisherIdentity &&
+          publisherIdentity(storedLink) === incomingPublisherIdentity
+        )
+      ) {
+        matches.push(Number(row.id));
+      }
+    }
+    statement.free();
+    return matches;
+  }
+
+  private journalCandidates(row: {
+    article_journal?: SqlValue;
+    feed_journals?: SqlValue;
+  }): string[] {
+    return [
+      textValue(row.article_journal),
+      ...textValue(row.feed_journals)
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean),
+    ].filter((value, index, values) => values.indexOf(value) === index);
+  }
+
+  private publisherIdentitiesDoNotConflict(
+    storedLink: string,
+    incomingLink: string,
+  ): boolean {
+    const storedIdentity = publisherIdentity(storedLink);
+    const incomingIdentity = publisherIdentity(incomingLink);
+    return !storedIdentity || !incomingIdentity ||
+      storedIdentity === incomingIdentity;
   }
 
   private parsedItemParams(
@@ -1194,7 +1345,7 @@ export class RssRepository {
       $title: item.title,
       $titleNorm: item.titleNorm,
       $authors: item.authors,
-      $journal: item.journal,
+      $journal: item.articleJournal?.trim() ?? "",
       $year: item.year,
       $doi: item.doi,
       $link: item.link,
@@ -1229,7 +1380,7 @@ export class RssRepository {
   ): unknown {
     const statement = db.prepare(sql);
     try {
-      statement.bind(params as BindParams);
+      statement.bind(params);
       if (!statement.step()) {
         return null;
       }
@@ -1246,72 +1397,73 @@ export class RssRepository {
   private toFeed(row: Row): Feed {
     return {
       id: Number(row.id),
-      name: String(row.name),
-      url: String(row.url),
+      name: textValue(row.name),
+      journalName: textValue(row.journal_name ?? row.name),
+      url: textValue(row.url),
       enabled: Boolean(row.enabled),
-      createdAt: String(row.created_at),
-      updatedAt: String(row.updated_at),
+      createdAt: textValue(row.created_at),
+      updatedAt: textValue(row.updated_at),
       lastCheckedAt: row.last_checked_at
-        ? String(row.last_checked_at)
+        ? textValue(row.last_checked_at)
         : null,
-      lastError: row.last_error ? String(row.last_error) : null,
-      etag: row.etag ? String(row.etag) : null,
-      lastModified: row.last_modified ? String(row.last_modified) : null,
+      lastError: row.last_error ? textValue(row.last_error) : null,
+      etag: row.etag ? textValue(row.etag) : null,
+      lastModified: row.last_modified ? textValue(row.last_modified) : null,
       lastSuccessAt: row.last_success_at
-        ? String(row.last_success_at)
+        ? textValue(row.last_success_at)
         : null,
       consecutiveFailures: Number(row.consecutive_failures ?? 0),
       healthStatus: (row.health_status ?? "healthy") as Feed["healthStatus"],
       nextAutoUpdateAt: row.next_auto_update_at
-        ? String(row.next_auto_update_at)
+        ? textValue(row.next_auto_update_at)
         : null,
       itemCount: Number(row.item_count ?? 0),
     };
   }
 
   private toItem(row: Row): RssItem {
-    const status = String(row.item_status);
+    const status = textValue(row.item_status);
     if (!ITEM_STATUSES.includes(status as ItemStatus)) {
       throw new Error(t("database.unknown_item_status", { status }));
     }
     return {
       id: Number(row.id),
-      stableGuid: String(row.stable_guid),
-      title: String(row.title),
-      titleNorm: String(row.title_norm),
-      authors: String(row.authors ?? ""),
-      journal: String(row.journal ?? ""),
-      feedNames: String(row.feed_names ?? ""),
-      year: String(row.year ?? ""),
-      doi: String(row.doi ?? ""),
-      link: String(row.link ?? ""),
-      pubDate: String(row.pub_date ?? ""),
-      summary: String(row.summary ?? ""),
-      firstSeenAt: String(row.first_seen_at),
-      lastSeenAt: String(row.last_seen_at),
+      stableGuid: textValue(row.stable_guid),
+      title: textValue(row.title),
+      titleNorm: textValue(row.title_norm),
+      authors: textValue(row.authors),
+      journal: textValue(row.journal ?? row.article_journal),
+      feedNames: textValue(row.feed_names),
+      year: textValue(row.year),
+      doi: textValue(row.doi),
+      link: textValue(row.link),
+      pubDate: textValue(row.pub_date),
+      summary: textValue(row.summary),
+      firstSeenAt: textValue(row.first_seen_at),
+      lastSeenAt: textValue(row.last_seen_at),
       itemStatus: status as ItemStatus,
       finalTier: row.final_tier
-        ? (String(row.final_tier) as RssItem["finalTier"])
+        ? (textValue(row.final_tier) as RssItem["finalTier"])
         : null,
       keywordScore:
         row.keyword_score === null || row.keyword_score === undefined
           ? null
           : Number(row.keyword_score),
       llmTier: row.llm_tier
-        ? (String(row.llm_tier) as RssItem["llmTier"])
+        ? (textValue(row.llm_tier) as RssItem["llmTier"])
         : null,
-      matchedKeywords: String(row.matched_keywords ?? "[]"),
+      matchedKeywords: textValue(row.matched_keywords, "[]"),
       translatedTitle: row.translated_title
-        ? String(row.translated_title)
+        ? textValue(row.translated_title)
         : null,
       translatedAbstract: row.translated_abstract
-        ? String(row.translated_abstract)
+        ? textValue(row.translated_abstract)
         : null,
       titleTranslationStatus: row.title_translation_status
-        ? (String(row.title_translation_status) as TranslationStatus)
+        ? (textValue(row.title_translation_status) as TranslationStatus)
         : null,
       abstractTranslationStatus: row.abstract_translation_status
-        ? (String(row.abstract_translation_status) as TranslationStatus)
+        ? (textValue(row.abstract_translation_status) as TranslationStatus)
         : null,
     };
   }
@@ -1319,20 +1471,20 @@ export class RssRepository {
   private toTranslation(row: Row): TranslationRecord {
     return {
       itemId: Number(row.item_id),
-      field: String(row.field) as TranslationField,
-      sourceText: String(row.source_text),
+      field: textValue(row.field) as TranslationField,
+      sourceText: textValue(row.source_text),
       translatedText: row.translated_text
-        ? String(row.translated_text)
+        ? textValue(row.translated_text)
         : null,
       sourceLanguage: row.source_language
-        ? String(row.source_language)
+        ? textValue(row.source_language)
         : null,
-      targetLanguage: String(row.target_language),
+      targetLanguage: textValue(row.target_language),
       provider: "google-web",
-      sourceHash: String(row.source_hash),
-      status: String(row.status) as TranslationStatus,
+      sourceHash: textValue(row.source_hash),
+      status: textValue(row.status) as TranslationStatus,
       attemptCount: Number(row.attempt_count),
-      lastError: row.last_error ? String(row.last_error) : null,
+      lastError: row.last_error ? textValue(row.last_error) : null,
       translatedAt:
         row.translated_at === null ? null : Number(row.translated_at),
     };

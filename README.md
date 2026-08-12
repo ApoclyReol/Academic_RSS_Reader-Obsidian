@@ -2,53 +2,106 @@
 
 [简体中文](README.zh-CN.md)
 
-Academic RSS Reader is a desktop plugin for screening academic literature from RSS and Atom feeds. It stores subscriptions, reading states, translations, recommendation data, and interest analysis locally without a Python sidecar.
+> **Turn scattered academic RSS feeds into a local reading queue that you can continuously screen, translate, and prioritize.**
 
-Version 1.3.0 adopts Obsidian's declarative settings API, adds settings-search compatibility, and requires the latest available Obsidian 1.13 release.
+Academic RSS Reader is a desktop Obsidian plugin for the first pass of academic literature screening. It collects RSS and Atom feeds into a local SQLite database, keeps reading decisions in five clear baskets, and learns from those decisions to prioritize unread papers. It does not require a Python sidecar.
 
-## Features
+The plugin focuses on the step between “new papers arrived” and “I know what deserves a closer read”. It is designed to reduce repetitive triage, not to replace a reference manager or a full-text database.
+
+> [!IMPORTANT]
+> Current recommended version: **1.4.0**. This version requires Obsidian **1.13.0 or later** and is desktop-only. Its bundled runtime must also provide Node.js **22.16 or later**, `node:sqlite` `DatabaseSync`, and the SQLite Backup API. Update Obsidian before installing or updating when possible.
+
+## Why use Academic RSS Reader
+
+- **One reading queue**: bring journal, lab, publisher, and other RSS/Atom feeds into one reader.
+- **Feedback-driven prioritization**: mark papers as interested, archived, hidden, or expired, then use those decisions to rank the unread queue.
+- **A small, understandable workflow**: collect, scan, classify, and return to the papers worth reading.
+- **Local-first storage**: subscriptions, papers, reading states, translations, recommendations, and analysis stay in a Vault directory you choose.
+- **Optional assistance**: translate visible titles or ask a configured OpenAI-compatible service to review only the papers that remain pending.
+- **Recoverable and explainable**: migrations create a protection backup first; recommendation results retain positive and negative keyword evidence, while subscription defaults and article-level journal metadata stay separate.
+
+The core principle is simple: the plugin handles repetitive collection and sorting; you decide what deserves attention.
+
+## How it works
+
+```text
+Choose a Vault data directory
+        ↓
+Add or import RSS/Atom feeds
+        ↓
+Update feeds and collect new papers
+        ↓
+Scan the unread basket and mark reading states
+        ↓
+Refresh local recommendations
+        ↓
+Optionally review pending papers with an LLM
+```
+
+## Who it is for
+
+Academic RSS Reader is a good fit if you:
+
+- follow multiple journals, publishers, laboratories, or research topics through RSS;
+- receive more new papers than you can inspect immediately;
+- want a queue that reflects your own reading decisions instead of a generic popularity ranking;
+- prefer to keep research data inside your local Obsidian Vault;
+- want lightweight title translation without sending every paper to an AI service.
+
+## What it can do
+
+### Collect and organize feeds
 
 - Add, edit, enable, disable, and delete feeds.
-- Import OPML, XML, TXT, pasted feed lists, and one-URL-per-line text.
-- Update all enabled feeds automatically after the reader is first opened in a session, or update all feeds and individual feeds manually.
-- Extract titles, authors, journals, years, DOIs, links, and abstracts from RSS and Atom.
-- Keep stable GUIDs, normalized titles, layered deduplication, cross-feed associations, and existing reading states.
-- Organize papers into unread, interested, archived, hidden, and expired baskets.
-- Load papers continuously in batches of 100, open links in the system browser, and undo state changes during the current session.
-- Rank unread papers with TypeScript TF-IDF and logistic regression, user-managed stopwords, and an optional OpenAI-compatible LLM review.
-- Translate visible titles and analyze interests overall or by feed.
-- Match the interface language to the app: Chinese locales use Simplified Chinese, while English and all other locales use English.
+- Import OPML, XML, TXT, pasted feed lists, or one URL per line.
+- Update enabled feeds automatically when the reader is first opened after an app launch. Feeds updated successfully within the previous hour are skipped with a visible count; manual updates always run.
+- Use ETag, Last-Modified, HTTP 304, bounded concurrency, retry delays, timeouts, cancellation, health states, and automatic backoff to make repeated updates less noisy.
+- Extract titles, authors, source names, years, DOIs, links, and abstracts when provided by the feed.
+- Preserve stable identities, normalized titles, cross-feed associations, existing reading states, and layered duplicate checks.
 
-## Title translation
+### Screen papers in five baskets
 
-Title translation uses an unofficial, unauthenticated Google web endpoint.
+- Manage papers as **Unread**, **Interested**, **Archived**, **Hidden**, or **Expired**.
+- Load long lists continuously in batches of 100 instead of rendering the whole database at once.
+- Open the original paper in the system browser.
+- Undo the most recent status action during the current reader session.
 
-- The reader can switch between original and translated titles.
-- Only titles in the viewport are translated, with the next eight titles prefetched.
-- Translations are cached in the local SQLite database.
-- Feed updates do not wait for translation.
-- Translation failures do not interrupt feeds, reading, recommendations, or analysis.
-- Interface language follows Obsidian and is independent of the content translation target.
-- Recommendation training stays local. It uses sparse text, author, journal, feed, and freshness features; only an explicitly requested LLM review sends paper content to the configured service.
-- The keyword table supports per-term stopword/enable controls. Built-in stopwords, corpus-frequency filtering, and conservative class-neutral filtering reduce noisy terms; user-disabled terms remain disabled across model rebuilds.
-- Keyword recommendations are refreshed automatically after every feed-update batch. An unchanged training hash reuses the model and scores only new or changed unread papers.
-- Feed updates use ETag/Last-Modified validation, four global requests with one request per host, a 20-second scheduler timeout, Retry-After, cancellation, and automatic failure backoff.
+### Prioritize the unread queue
 
-The endpoint may be rate-limited, unavailable in some regions, or changed upstream. Translations may be inaccurate and should not be used as formal citations. Titles are sent directly from the user's device to the translation service and do not pass through a developer-operated server.
+- Train a local TypeScript TF-IDF and logistic-regression model from your reading states.
+- Use interested and archived papers as positive examples, and hidden and expired papers as negative examples.
+- Show high-relevance, pending, and low-relevance tiers below a fixed two-line title area, using a compact status badge and two aligned lines for the strongest positive and negative keyword evidence.
+- Use the same TF-IDF feature scale for training and formal scoring; cancelled background training cannot write stale results.
+- Manage the learned keyword list by disabling or re-enabling individual terms.
+- Refresh recommendations automatically after feed updates, while reusing an unchanged model and scoring only new or changed unread papers when possible.
+- Optionally review only pending papers with a user-configured OpenAI-compatible LLM. The LLM does not run automatically during normal feed updates.
 
-## Installation
+The local model needs at least two positive and two negative training papers. Until there is enough feedback, papers can remain unscored rather than receiving an arbitrary personalized judgment.
 
-The plugin supports desktop installations only and requires Obsidian 1.13.0 or later. Before installing or updating to v1.3.0, update Obsidian to the latest available 1.13.x release.
+### Translate and analyze
 
-Academic RSS Reader is available in the community plugin directory. The recommended installation method is:
+- Translate visible paper titles and prefetch the next eight titles while you scroll.
+- Cache translations in the local database and keep the original title available at any time.
+- Review overall reading states and compare interest rates across feeds.
+- Keep the interface language tied to Obsidian while choosing the content translation target separately.
 
-1. Open **Settings → Community plugins**.
-2. Select **Browse** and search for **Academic RSS Reader**.
-3. Select **Install**, then **Enable**.
+### Data model and safety boundaries
 
-### Manual installation
+- Each feed has an editable default journal name. A journal explicitly supplied by RSS takes priority, and journal names from multiple associated feeds are shown once each.
+- Article links accept only `http:` and `https:`. RSS/XML rejects `DOCTYPE`, invalid root structures, and responses over 10 MiB; only known tracking parameters are removed, while business query parameters are preserved.
+- LLM endpoints must use HTTPS, or HTTP on `localhost`, `127.0.0.1`, or `::1`. Requests have a 30-second timeout and bounded retries.
 
-Manual installation is available as a fallback. Download `main.js`, `manifest.json`, and `styles.css` from the matching GitHub Release and place them in:
+## Get started
+
+1. Open **Settings → Community plugins → Browse**, search for **Academic RSS Reader**, and install and enable it.
+2. Open **Settings → Academic RSS Reader** and choose a data directory inside the current Vault.
+3. Select **Create new database** for a new setup, or **Load database** for an existing `rss-reader.sqlite3`. v1.3 and older databases are upgraded in place; a protection backup is created first and the original database is restored if migration fails.
+4. Open the reader from the RSS ribbon icon, or press `Cmd/Ctrl + P` and run **Open reader**.
+5. Add feeds or import an OPML/feed list, then run an update.
+6. Mark papers as you review them. After you have enough examples, open **Personalized recommendations** and run **Update keyword recommendations**.
+7. If you want an additional review pass, configure an OpenAI-compatible endpoint, model, and SecretStorage API key in settings, then run **Review pending items with LLM** explicitly.
+
+If the community directory is unavailable, download only `main.js`, `manifest.json`, and `styles.css` from the matching GitHub Release and place them in:
 
 ```text
 <Vault>/.obsidian/plugins/academic-rss-reader/
@@ -57,13 +110,11 @@ Manual installation is available as a fallback. Download `main.js`, `manifest.js
 └── styles.css
 ```
 
-Reload third-party plugins and enable Academic RSS Reader.
+Do not install the source-code archive generated by GitHub. When upgrading manually from the former `rss-reader` plugin ID, close Obsidian, rename the old plugin directory to `academic-rss-reader`, replace the three release files, and keep `data.json` so the legacy LLM key can be migrated to SecretStorage on first load.
 
-When upgrading manually from the former `rss-reader` plugin ID, close the application, rename the old plugin directory to `academic-rss-reader`, and replace only the three release files. Keep `data.json` so the first load can move a legacy LLM API key into SecretStorage. A clean installation must select and load the existing Vault data directory again.
+## Data and privacy
 
-## Local data and backups
-
-Before creating or loading a database, select a data directory inside the current Vault:
+Your runtime database is stored in the Vault-relative directory you select:
 
 ```text
 <Vault>/<selected data directory>/
@@ -71,59 +122,38 @@ Before creating or loading a database, select a data directory inside the curren
 └── backups/
 ```
 
-All runtime file operations use the Vault adapter with normalized Vault-relative paths. The plugin does not accept absolute paths or paths that traverse outside the Vault.
+Subscriptions, papers, reading states, translations, recommendations, and interest analysis are stored locally in SQLite. General settings stay in the plugin's `data.json`; the LLM API key is stored through Obsidian SecretStorage, while `data.json` stores only the selected secret entry name.
 
-`data.json` stores non-sensitive settings and the SecretStorage entry name. The LLM API key is stored in SecretStorage. Subscriptions, papers, translations, recommendations, and analysis data remain in SQLite.
+Academic RSS Reader does not require an account, run telemetry, or operate a developer relay server. Network requests are limited to services you use:
 
-The settings page supports:
+- RSS/Atom updates go to the feed URLs you configure.
+- Title translation uses an unofficial Google web endpoint. When enabled, visible and prefetched titles are sent directly from your device; translations may be rate-limited, inaccurate, or unavailable and should not be used for formal citation.
+- An LLM request is made only when you explicitly test the connection or review pending papers. The request includes the paper information needed for the review and your optional research-interest description, and is sent to the endpoint you configure.
 
-- Creating a new database or loading an existing database.
-- Migrating the active database to an empty directory.
-- Loading another valid database without overwriting it.
-- Creating protection backups before dangerous operations.
-- Creating manual backups and restoring the latest valid backup.
+The plugin does not create or open a database during startup. Database creation and loading begin only after you choose a Vault-relative data directory and explicitly create or load it. Saves use validated temporary and previous snapshots, and the settings page can create protection backups and restore the latest valid backup. The desktop-native SQLite boundary is limited to the database file, WAL/SHM sidecars, temporary files, and backups; other Vault files continue to use Obsidian's `DataAdapter` boundary.
 
-The plugin does not create a database during startup. A failed validation keeps the original file unchanged and does not create a recovery database.
+## Compatibility and boundaries
 
-Database saves use validated temporary and previous snapshots. When the reader
-loads a configured directory, a valid `rss-reader.sqlite3` is used immediately.
-Only when that file is missing or invalid does the plugin try
-`rss-reader.sqlite3.tmp`, then `rss-reader.sqlite3.previous`. A recovered file is
-validated again before the leftover snapshots are removed. If no valid snapshot
-exists, loading stops and the original files are preserved for backup recovery.
+- Desktop Obsidian only: macOS, Windows, and Linux desktop installations.
+- Requires Obsidian 1.13.0 or later plus a bundled Node.js 22.16+ runtime exposing `node:sqlite`; unsupported runtimes block database loading with an upgrade prompt. There is no `sql.js` fallback.
+- No Python, separate Node.js installation, or sidecar process is required; Obsidian supplies the required runtime.
+- Title translation is an experimental reading aid, not a formal translation or citation service.
+- The database is intended for one local desktop Obsidian instance at a time; it is not a multi-user sync database.
 
-Normal database switching, restoration, and plugin shutdown wait for queued
-writes to finish. If an in-memory commit cannot be saved to disk, further writes
-are disabled and the reader reports that memory and disk may be inconsistent.
+## Continue reading
 
-## Development
-
-Node.js 18 or later is required.
-
-```bash
-npm install
-npm run lint
-npm test
-npm run build
-npm run package
-```
-
-`npm run package` uses `build/` as the only output directory. It clears the directory first, then places only `main.js`, `manifest.json`, and `styles.css` directly inside it. The project does not use separate `dist/` or `out/` directories and does not create ZIP or checksum artifacts.
-
-Release builds are generated from version tags in GitHub Actions. The workflow attests the provenance of all three release files before publishing them. A downloaded file can be verified with:
-
-```bash
-gh attestation verify main.js -R ApoclyReol/Academic_RSS_Reader-Obsidian
-```
-
-## Documentation
-
+- [Documentation index](docs/README.md)
+- [Architecture design](docs/ARCHITECTURE.md)
+- [Database design](docs/DATABASE.md)
 - [Development guide](docs/DEVELOPMENT.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [Security and privacy](SECURITY.md)
 - [Changelog](CHANGELOG.md)
+- [v1.4.0 release notes](docs/V1_4_0_RELEASE.md)
 - [v1.3.0 release notes](docs/V1_3_0_RELEASE.md)
 - [v1.2.0 release notes](docs/V1_2_0_RELEASE.md)
+
+Development and release commands are documented in the [development guide](docs/DEVELOPMENT.md).
 
 ## License
 

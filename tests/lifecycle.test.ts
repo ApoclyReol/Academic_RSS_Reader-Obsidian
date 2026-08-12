@@ -11,6 +11,7 @@ import { RssDatabase } from "../src/database/database";
 import { DEFAULT_SETTINGS } from "../src/models/settings";
 import { RssRepository } from "../src/repositories/rss-repository";
 import { DatabaseOperationCoordinator } from "../src/services/database-operation-coordinator";
+import { RecommendationService } from "../src/services/recommendation-service";
 import type {
   TranslationProvider,
   TranslationResult,
@@ -24,11 +25,15 @@ const timerWindow = new HappyWindow() as unknown as Pick<
 >;
 
 describe("database lifecycle coordination", () => {
-  const databases: RssDatabase[] = [];
+  const databases: Array<{
+    database: RssDatabase;
+    adapter: MemoryAdapter;
+  }> = [];
 
   afterEach(() => {
-    for (const database of databases) {
+    for (const { database, adapter } of databases) {
       database.close();
+      adapter.dispose();
     }
     databases.length = 0;
   });
@@ -58,19 +63,28 @@ describe("database lifecycle coordination", () => {
   });
 
   it("drains an in-flight save before allowing close", async () => {
-    const adapter = new DelayedWriteAdapter();
+    const adapter = new MemoryAdapter();
     const database = new RssDatabase(
       adapter,
       "Data/rss-reader.sqlite3",
     );
     await database.initialize();
-    adapter.delayNextTemporaryWrite();
-    const writing = database.write((db) => {
+    let markStarted!: () => void;
+    let releaseOperation!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const operationGate = new Promise<void>((resolve) => {
+      releaseOperation = resolve;
+    });
+    const writing = database.write(async (db) => {
+      markStarted();
+      await operationGate;
       db.run(
         "INSERT INTO feeds(name,url,enabled) VALUES ('Drain','https://example.com/drain',1)",
       );
     });
-    await adapter.writeStarted;
+    await started;
 
     let drained = false;
     const draining = database.drain().then(() => {
@@ -80,20 +94,59 @@ describe("database lifecycle coordination", () => {
     expect(drained).toBe(false);
     expect(() => database.close()).toThrow("保存任务正在进行");
 
-    adapter.releaseWrite();
+    releaseOperation();
     await writing;
     await draining;
     expect(drained).toBe(true);
     database.close();
+    adapter.dispose();
+  });
+
+  it("cancels recommendation training before its first database write", async () => {
+    const coordinator = new DatabaseOperationCoordinator();
+    const { database, repository, itemIds, adapter } = await createRepository(
+      coordinator,
+      4,
+    );
+    databases.push({ database, adapter });
+    await repository.setItemStatus(itemIds.slice(0, 2), "interested");
+    await repository.setItemStatus(itemIds.slice(2), "hidden");
+
+    let markStarted!: () => void;
+    let releaseTraining!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const trainingGate = new Promise<void>((resolve) => {
+      releaseTraining = resolve;
+    });
+    const service = new RecommendationService(
+      repository,
+      coordinator,
+      async () => {
+        markStarted();
+        await trainingGate;
+      },
+    );
+
+    const rebuilding = service.rebuild();
+    await started;
+    const stopping = service.stop();
+    releaseTraining();
+    await stopping;
+    await expect(rebuilding).rejects.toThrow(/取消|cancel/i);
+    expect(database.get<{ count: number }>(
+      "SELECT COUNT(*) AS count FROM recommendation_models",
+    )?.count).toBe(0);
   });
 
   it("waits for an in-flight translation and prevents post-stop writes", async () => {
     const coordinator = new DatabaseOperationCoordinator();
-    const { database, repository, itemIds } = await createRepository(
+    const { database, repository, itemIds, adapter } = await createRepository(
       coordinator,
       1,
     );
-    databases.push(database);
+    databases.push({ database, adapter });
 
     let markStarted!: () => void;
     let resolveTranslation!: (result: TranslationResult) => void;
@@ -144,11 +197,11 @@ describe("database lifecycle coordination", () => {
 
   it("normalizes and resumes pending translations after restore", async () => {
     const coordinator = new DatabaseOperationCoordinator();
-    const { database, repository, itemIds } = await createRepository(
+    const { database, repository, itemIds, adapter } = await createRepository(
       coordinator,
       3,
     );
-    databases.push(database);
+    databases.push({ database, adapter });
     for (const [index, status] of [
       "pending",
       "translating",
@@ -169,7 +222,8 @@ describe("database lifecycle coordination", () => {
         translatedAt: null,
       });
     }
-    const restoredBytes = database.exportBytes();
+    const restorePath = "Data/translation-restore.sqlite3";
+    await database.backup(restorePath);
     const translatedTexts: string[] = [];
     const provider: TranslationProvider = {
       id: "google-web",
@@ -190,7 +244,7 @@ describe("database lifecycle coordination", () => {
     );
 
     const releaseTransition = coordinator.acquireTransition();
-    await database.replaceFromBytes(restoredBytes);
+    await database.restoreFromFile(restorePath);
     await service.initialize();
     expect(
       repository.listTranslationsByStatus(["pending"]),
@@ -221,6 +275,7 @@ async function createRepository(
   database: RssDatabase;
   repository: RssRepository;
   itemIds: number[];
+  adapter: MemoryAdapter;
 }> {
   const adapter = new MemoryAdapter();
   const database = new RssDatabase(
@@ -254,37 +309,6 @@ async function createRepository(
     database,
     repository,
     itemIds: stored.insertedIds,
+    adapter,
   };
-}
-
-class DelayedWriteAdapter extends MemoryAdapter {
-  private shouldDelay = false;
-  private startWrite: (() => void) | null = null;
-  private finishWrite: (() => void) | null = null;
-  writeStarted: Promise<void> = Promise.resolve();
-
-  delayNextTemporaryWrite(): void {
-    this.shouldDelay = true;
-    this.writeStarted = new Promise<void>((resolve) => {
-      this.startWrite = resolve;
-    });
-  }
-
-  releaseWrite(): void {
-    this.finishWrite?.();
-  }
-
-  override async writeBinary(
-    path: string,
-    data: ArrayBuffer,
-  ): Promise<void> {
-    if (this.shouldDelay && path.endsWith(".tmp")) {
-      this.shouldDelay = false;
-      this.startWrite?.();
-      await new Promise<void>((resolve) => {
-        this.finishWrite = resolve;
-      });
-    }
-    await super.writeBinary(path, data);
-  }
 }

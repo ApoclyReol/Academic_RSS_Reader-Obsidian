@@ -18,6 +18,7 @@ export type TranslationStatus =
 export interface Feed {
   id: number;
   name: string;
+  journalName: string;
   url: string;
   enabled: boolean;
   createdAt: string;
@@ -35,6 +36,7 @@ export interface Feed {
 
 export interface FeedInput {
   name: string;
+  journalName?: string;
   url: string;
   enabled: boolean;
 }
@@ -71,6 +73,8 @@ export interface ParsedItem {
   titleNorm: string;
   authors: string;
   journal: string;
+  /** RSS-provided article journal; empty/undefined means use feed defaults. */
+  articleJournal?: string;
   year: string;
   doi: string;
   link: string;

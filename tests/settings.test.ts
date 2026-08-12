@@ -4,10 +4,15 @@ import {
   it,
   vi,
 } from "vitest";
+import { Window as HappyWindow } from "happy-dom";
 
 vi.mock("obsidian", () => {
   class MockPluginSettingTab {
-    constructor(_app: unknown, _plugin: unknown) {}
+    app: unknown;
+
+    constructor(app: unknown, _plugin: unknown) {
+      this.app = app;
+    }
 
     update(): void {}
 
@@ -88,16 +93,21 @@ describe("declarative settings", () => {
   it("keeps normalized values when declarative controls save", async () => {
     const saveSettings = vi.fn(async () => undefined);
     const plugin = createPluginStub({ saveSettings });
-    const tab = new RssReaderSettingTab({} as App, plugin);
+    const settingsWindow = new HappyWindow();
+    const app = {
+      workspace: { containerEl: settingsWindow.document.body },
+    } as unknown as App;
+    const tab = new RssReaderSettingTab(app, plugin);
 
-    await tab.setControlValue("llmBaseUrl", "  https://example.com/v1  ");
-    await tab.setControlValue("llmModel", "  test-model  ");
-    await tab.setControlValue("userInterest", "  biology  ");
+    void tab.setControlValue("llmBaseUrl", "  https://example.com/v1  ");
+    void tab.setControlValue("llmModel", "  test-model  ");
+    void tab.setControlValue("userInterest", "  biology  ");
+    await new Promise<void>((resolve) => settingsWindow.setTimeout(resolve, 300));
 
     expect(plugin.settings.llmBaseUrl).toBe("https://example.com/v1");
     expect(plugin.settings.llmModel).toBe("test-model");
     expect(plugin.settings.userInterest).toBe("biology");
-    expect(saveSettings).toHaveBeenCalledTimes(3);
+    expect(saveSettings).toHaveBeenCalledTimes(1);
   });
 
   it("reflects database readiness in declarative visibility predicates", () => {
@@ -128,6 +138,36 @@ describe("declarative settings", () => {
         ? currentDatabase.visible()
         : currentDatabase.visible,
     ).toBe(true);
+  });
+
+  it("saves non-reader settings without refreshing the reader", async () => {
+    const saveSettings = vi.fn(async () => undefined);
+    const plugin = createPluginStub({ saveSettings });
+    const settingsWindow = new HappyWindow();
+    const app = {
+      workspace: { containerEl: settingsWindow.document.body },
+    } as unknown as App;
+    const tab = new RssReaderSettingTab(app, plugin);
+
+    void tab.setControlValue("llmModel", "test-model");
+    await new Promise<void>((resolve) => settingsWindow.setTimeout(resolve, 300));
+
+    expect(saveSettings).toHaveBeenCalledWith(false);
+  });
+
+  it("marks a target-language change for reader refresh", async () => {
+    const saveSettings = vi.fn(async () => undefined);
+    const plugin = createPluginStub({ saveSettings });
+    const settingsWindow = new HappyWindow();
+    const app = {
+      workspace: { containerEl: settingsWindow.document.body },
+    } as unknown as App;
+    const tab = new RssReaderSettingTab(app, plugin);
+
+    void tab.setControlValue("targetLanguage", "en");
+    await new Promise<void>((resolve) => settingsWindow.setTimeout(resolve, 300));
+
+    expect(saveSettings).toHaveBeenCalledWith(true);
   });
 });
 

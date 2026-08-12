@@ -1,12 +1,26 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  existsSync,
+  readFileSync,
+} from "node:fs";
+import { performance } from "node:perf_hooks";
+import { DatabaseSync } from "node:sqlite";
 
 import {
   RssDatabase,
   inspectDatabaseFile,
   recoverDatabaseFile,
 } from "../src/database/database";
+import {
+  CREATE_SCHEMA_SQL,
+  SCHEMA_MIGRATIONS,
+} from "../src/database/schema";
 import { RssRepository } from "../src/repositories/rss-repository";
-import { stableGuid } from "../src/services/rss-parser";
+import {
+  parseFeed,
+  stableGuid,
+} from "../src/services/rss-parser";
+import { assertSqliteRuntimeCapabilities } from "../src/services/desktop-runtime";
 import { MemoryAdapter } from "./helpers/memory-adapter";
 
 describe("database and repository", () => {
@@ -21,13 +35,16 @@ describe("database and repository", () => {
     repository = new RssRepository(database);
   });
 
-  afterEach(() => database.close());
+  afterEach(() => {
+    database.close();
+    adapter.dispose();
+  });
 
   it("applies ordered schema migrations for feeds and models", () => {
     const versions = database.query<{ version: number }>(
       "SELECT version FROM schema_migrations ORDER BY version",
     );
-    expect(versions.map((row) => row.version)).toEqual([1, 2, 3]);
+    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4]);
     const feedColumns = database.query<{ name: string }>(
       "PRAGMA table_info(feeds)",
     );
@@ -37,6 +54,255 @@ describe("database and repository", () => {
     );
     expect(modelColumns.map((row) => row.name)).toContain(
       "training_hash",
+    );
+  });
+
+  it("blocks hosts without DatabaseSync or the SQLite Backup API", () => {
+    expect(() => assertSqliteRuntimeCapabilities({}, "22.15.0"))
+      .toThrow(/22\.16|node:sqlite/i);
+    expect(() => assertSqliteRuntimeCapabilities({ DatabaseSync: function DatabaseSync() {} } as never, "24.0.0"))
+      .toThrow(/22\.16|node:sqlite/i);
+  });
+
+  it("upgrades a v3 database in place and preserves data state", async () => {
+    const legacyAdapter = new MemoryAdapter();
+    await createLegacyDatabase(legacyAdapter, "Legacy/rss-reader.sqlite3", 3);
+    const legacyPath = legacyAdapter.getFullPath("Legacy/rss-reader.sqlite3");
+    const legacy = new DatabaseSync(legacyPath);
+    legacy.prepare(
+      "INSERT INTO feeds(name,url,enabled) VALUES ('Legacy feed','https://example.com/legacy',1)",
+    ).run();
+    const feedId = Number(legacy.prepare("SELECT last_insert_rowid() AS id").get()?.id);
+    legacy.prepare(
+      `INSERT INTO items(
+        stable_guid,title,title_norm,authors,journal,year,doi,link,item_status
+      ) VALUES ('legacy-guid','Legacy paper','legacy paper','Alice','Old journal','2024','10.1000/legacy','https://example.com/legacy-paper','interested')`,
+    ).run();
+    const itemId = Number(legacy.prepare("SELECT last_insert_rowid() AS id").get()?.id);
+    legacy.prepare(
+      "INSERT INTO item_feeds(item_id,feed_id) VALUES ($itemId,$feedId)",
+    ).run({ $itemId: itemId, $feedId: feedId });
+    legacy.prepare(
+      `INSERT INTO translations(
+        item_id,field,source_text,translated_text,target_language,provider,
+        source_hash,status,attempt_count
+      ) VALUES ($itemId,'title','Legacy paper','旧文章','zh-CN','google-web','hash','succeeded',1)`,
+    ).run({ $itemId: itemId });
+    legacy.close();
+
+    const migrated = new RssDatabase(
+      legacyAdapter,
+      "Legacy/rss-reader.sqlite3",
+    );
+    await migrated.initialize({ createIfMissing: false });
+    const migratedRepository = new RssRepository(migrated);
+    expect(migrated.query<{ version: number }>(
+      "SELECT MAX(version) AS version FROM schema_migrations",
+    )[0]?.version).toBe(4);
+    expect(migratedRepository.getFeed(feedId)?.journalName).toBe("Legacy feed");
+    expect(migratedRepository.getItem(itemId, "zh-CN")).toMatchObject({
+      itemStatus: "interested",
+      journal: "Legacy feed",
+      translatedTitle: "旧文章",
+    });
+    expect(migrated.get<{ value: string }>(
+      "SELECT value FROM app_metadata WHERE key='legacy_identity_repair_v3'",
+    )).toBeNull();
+    expect(migrated.query("PRAGMA foreign_key_check")).toHaveLength(0);
+    const backups = await legacyAdapter.list("Legacy/backups");
+    expect(backups.files.some((path) => path.includes("before-schema4-"))).toBe(true);
+    migrated.close();
+    legacyAdapter.dispose();
+  });
+
+  it("reuses a v3 ScienceDirect item on the first update after migration", async () => {
+    const legacyAdapter = new MemoryAdapter();
+    await createLegacyDatabase(legacyAdapter, "Legacy/rss-reader.sqlite3", 3);
+    const legacyPath = legacyAdapter.getFullPath("Legacy/rss-reader.sqlite3");
+    const legacy = new DatabaseSync(legacyPath);
+    legacy.prepare(
+      "INSERT INTO feeds(name,url,enabled) VALUES ('Journal','https://rss.sciencedirect.com/publication/science/02684012',1)",
+    ).run();
+    const feedId = Number(
+      legacy.prepare("SELECT last_insert_rowid() AS id").get()?.id,
+    );
+    const oldGuid = stableGuid({
+      title: "Stable paper",
+      journal: "Journal",
+      year: "2026",
+      authors: "Alice, Bob",
+      doi: "",
+    });
+    legacy.prepare(
+      `INSERT INTO items(
+        stable_guid,title,title_norm,authors,journal,year,doi,link,item_status
+      ) VALUES (
+        $guid,'Stable paper','stablepaper','Alice, Bob','Journal','2026','',
+        'https://www.sciencedirect.com/science/article/pii/S0268401226000587',
+        'hidden'
+      )`,
+    ).run({ $guid: oldGuid });
+    const oldItemId = Number(
+      legacy.prepare("SELECT last_insert_rowid() AS id").get()?.id,
+    );
+    legacy.prepare(
+      "INSERT INTO item_feeds(item_id,feed_id) VALUES ($itemId,$feedId)",
+    ).run({ $itemId: oldItemId, $feedId: feedId });
+    legacy.close();
+
+    const migrated = new RssDatabase(
+      legacyAdapter,
+      "Legacy/rss-reader.sqlite3",
+    );
+    await migrated.initialize({ createIfMissing: false });
+    const migratedRepository = new RssRepository(migrated);
+    await migratedRepository.repairLegacyItemIdentity();
+    const parsed = parseFeed(
+      `<rss version="2.0"><channel><title>Journal</title><item>
+        <title>Stable paper</title>
+        <link>https://www.sciencedirect.com/science/article/pii/S0268401226000587?dgcid=rss_sd_all</link>
+        <pubDate>Thu, 01 Jan 2026 00:00:00 GMT</pubDate>
+      </item></channel></rss>`,
+      "Journal",
+      "Journal",
+    );
+    const result = await migratedRepository.upsertParsedItems(
+      feedId,
+      parsed.items,
+    );
+
+    expect(result).toMatchObject({
+      insertedIds: [],
+      duplicateHits: 1,
+      newFeedLinks: 0,
+    });
+    expect(migratedRepository.countItems({ status: "hidden" })).toBe(1);
+    expect(migratedRepository.getItem(oldItemId)).toMatchObject({
+      id: oldItemId,
+      stableGuid: oldGuid,
+      authors: "Alice, Bob",
+      itemStatus: "hidden",
+      link:
+        "https://www.sciencedirect.com/science/article/pii/S0268401226000587",
+    });
+    expect(migrated.query("PRAGMA foreign_key_check")).toHaveLength(0);
+    migrated.close();
+    legacyAdapter.dispose();
+  });
+
+  it("does not merge generic titles with different ScienceDirect PIIs", async () => {
+    const feedId = await repository.addFeed({
+      name: "Journal",
+      url: "https://rss.sciencedirect.com/publication/science/02684012",
+      enabled: true,
+    });
+    const first = parseFeed(
+      `<rss version="2.0"><channel><title>Journal</title><item>
+        <title>Editorial Board</title>
+        <link>https://www.sciencedirect.com/science/article/pii/S0268401226000514?dgcid=rss_sd_all</link>
+        <pubDate>Thu, 01 Jan 2026 00:00:00 GMT</pubDate>
+      </item></channel></rss>`,
+      "Journal",
+    ).items[0]!;
+    const second = parseFeed(
+      `<rss version="2.0"><channel><title>Journal</title><item>
+        <title>Editorial Board</title>
+        <link>https://www.sciencedirect.com/science/article/pii/S0268401226000733?dgcid=rss_sd_all</link>
+        <pubDate>Thu, 01 Jan 2026 00:00:00 GMT</pubDate>
+      </item></channel></rss>`,
+      "Journal",
+    ).items[0]!;
+
+    expect(first.stableGuid).not.toBe(second.stableGuid);
+    const result = await repository.upsertParsedItems(feedId, [first, second]);
+    expect(result.insertedIds).toHaveLength(2);
+    expect(repository.countItems({ status: "unread" })).toBe(2);
+  });
+
+  it("rolls back a failed migration to the original v2 file", async () => {
+    const rollbackAdapter = new MemoryAdapter();
+    await createLegacyDatabase(rollbackAdapter, "Rollback/rss-reader.sqlite3", 2);
+    const legacyPath = rollbackAdapter.getFullPath("Rollback/rss-reader.sqlite3");
+    const legacy = new DatabaseSync(legacyPath);
+    legacy.exec("ALTER TABLE recommendation_keywords ADD COLUMN idf REAL NOT NULL DEFAULT 1");
+    legacy.exec("PRAGMA user_version=2");
+    legacy.close();
+
+    const candidate = new RssDatabase(
+      rollbackAdapter,
+      "Rollback/rss-reader.sqlite3",
+    );
+    await expect(candidate.initialize({ createIfMissing: false })).rejects.toThrow(
+      /idf|duplicate|already exists/i,
+    );
+    const restored = new DatabaseSync(legacyPath, { readOnly: true });
+    expect(Number(restored.prepare(
+      "SELECT MAX(version) AS version FROM schema_migrations",
+    ).get()?.version)).toBe(2);
+    expect(
+      (restored.prepare("PRAGMA table_info(feeds)").all() as Array<{ name: string }>)
+        .some((column) => column.name === "journal_name"),
+    ).toBe(false);
+    restored.close();
+    const backups = await rollbackAdapter.list("Rollback/backups");
+    expect(backups.files.some((path) => path.includes("before-schema4-"))).toBe(true);
+    candidate.close();
+    rollbackAdapter.dispose();
+  });
+
+  it("shows article journal first and deduplicates all feed defaults", async () => {
+    const firstFeed = await repository.addFeed({
+      name: "Subscription A",
+      journalName: "Journal A",
+      url: "https://example.com/a",
+      enabled: true,
+    });
+    const secondFeed = await repository.addFeed({
+      name: "Subscription B",
+      journalName: "Journal B",
+      url: "https://example.com/b",
+      enabled: true,
+    });
+    await repository.upsertParsedItems(firstFeed, [{
+      stableGuid: "article-journal-guid",
+      title: "Article journal paper",
+      titleNorm: "article journal paper",
+      authors: "Alice",
+      journal: "Article Journal",
+      articleJournal: "Article Journal",
+      year: "2026",
+      doi: "",
+      link: "https://example.com/paper",
+      pubDate: "",
+      summary: "",
+    }]);
+    await repository.upsertParsedItems(secondFeed, [{
+      stableGuid: "article-journal-guid",
+      title: "Article journal paper",
+      titleNorm: "article journal paper",
+      authors: "Alice",
+      journal: "Article Journal",
+      articleJournal: "Article Journal",
+      year: "2026",
+      doi: "",
+      link: "https://example.com/paper",
+      pubDate: "",
+      summary: "",
+    }]);
+    const itemId = repository.listItems({ status: "unread" })[0]?.id;
+    expect(itemId).toBeDefined();
+    expect(repository.getItem(itemId!, "zh-CN")?.journal).toBe(
+      "Article Journal / Journal A / Journal B",
+    );
+
+    await repository.updateFeed(firstFeed, {
+      name: "Subscription A renamed",
+      journalName: "Journal Renamed",
+      url: "https://example.com/a",
+      enabled: true,
+    });
+    expect(repository.getItem(itemId!, "zh-CN")?.journal).toBe(
+      "Article Journal / Journal B / Journal Renamed",
     );
   });
 
@@ -175,6 +441,114 @@ describe("database and repository", () => {
     expect(repository.listFeeds()).toHaveLength(1);
   });
 
+  it("rejects backup paths outside the Vault-relative data directory", async () => {
+    await expect(database.backup("../outside.sqlite3")).rejects.toThrow(
+      /当前 Vault|Vault/i,
+    );
+    await expect(database.backup("/tmp/outside.sqlite3")).rejects.toThrow(
+      /相对目录|Vault/i,
+    );
+  });
+
+  it("writes, queries, reopens and fully validates 50,000 articles", async () => {
+    const feedId = await repository.addFeed({
+      name: "Performance feed",
+      url: "https://example.com/performance",
+      enabled: true,
+    });
+    const startedAt = performance.now();
+    await database.write((db) => {
+      const itemStatement = db.prepare(`
+        INSERT INTO items(
+          stable_guid,title,title_norm,authors,article_journal,year,doi,link,
+          pub_date,summary
+        ) VALUES (
+          $guid,$title,$titleNorm,'Author','Performance journal','2026','',
+          $link,'2026-01-01T00:00:00.000Z','Abstract'
+        )
+      `);
+      const feedStatement = db.prepare(
+        "INSERT INTO item_feeds(item_id,feed_id) VALUES ($itemId,$feedId)",
+      );
+      try {
+        for (let index = 0; index < 50_000; index += 1) {
+          itemStatement.run({
+            $guid: `performance-guid-${index}`,
+            $title: `Performance paper ${index}`,
+            $titleNorm: `performance paper ${index}`,
+            $link: `https://example.com/performance/${index}`,
+          });
+          const itemId = Number(
+            db.exec("SELECT last_insert_rowid() AS id")[0]?.values[0]?.[0],
+          );
+          feedStatement.run({ $itemId: itemId, $feedId: feedId });
+        }
+      } finally {
+        itemStatement.free();
+        feedStatement.free();
+      }
+    });
+    const elapsed = performance.now() - startedAt;
+    expect(database.get<{ count: number }>(
+      "SELECT COUNT(*) AS count FROM items",
+    )?.count).toBe(50_000);
+    expect(database.get<{ count: number }>(
+      "SELECT COUNT(*) AS count FROM item_feeds",
+    )?.count).toBe(50_000);
+    expect(database.get<{ id: number }>(
+      "SELECT id FROM items WHERE title_norm=$titleNorm",
+      { $titleNorm: "performance paper 49999" },
+    )?.id).toBe(50_000);
+    expect(elapsed).toBeLessThan(30_000);
+
+    database.close();
+    const reopened = new RssDatabase(adapter, "Data/test.sqlite3");
+    await reopened.initialize({ createIfMissing: false });
+    database = reopened;
+    repository = new RssRepository(reopened);
+    expect(await inspectDatabaseFile(adapter, database.path)).toMatchObject({
+      valid: true,
+      error: null,
+    });
+    expect(repository.countItems()).toBe(50_000);
+  }, 45_000);
+
+  it("reopens cleanly after a WAL-backed write", async () => {
+    const feedId = await repository.addFeed({
+      name: "WAL feed",
+      url: "https://example.com/wal",
+      enabled: true,
+    });
+    database.raw.native.exec("PRAGMA wal_autocheckpoint=1000000");
+    await repository.upsertParsedItems(feedId, [{
+      stableGuid: "wal-guid",
+      title: "WAL paper",
+      titleNorm: "wal paper",
+      authors: "Author",
+      journal: "WAL journal",
+      year: "2026",
+      doi: "",
+      link: "https://example.com/wal-paper",
+      pubDate: "2026-01-01T00:00:00.000Z",
+      summary: "Abstract",
+    }]);
+    const nativePath = adapter.getFullPath(database.path);
+    expect(existsSync(`${nativePath}-wal`) || existsSync(`${nativePath}-shm`)).toBe(true);
+
+    database.close();
+    const reopened = new RssDatabase(adapter, "Data/test.sqlite3");
+    await reopened.initialize({ createIfMissing: false });
+    database = reopened;
+    repository = new RssRepository(reopened);
+    expect(repository.listItems({ status: "unread" })[0]?.title).toBe(
+      "WAL paper",
+    );
+    expect(await inspectDatabaseFile(adapter, database.path)).toMatchObject({
+      valid: true,
+      error: null,
+    });
+  });
+
   it("does not create a database when existing-file loading is required", async () => {
     const path = "Missing/missing.sqlite3";
     const candidate = new RssDatabase(adapter, path);
@@ -186,7 +560,7 @@ describe("database and repository", () => {
   });
 
   it("inspects valid and damaged databases without modifying them", async () => {
-    expect(await inspectDatabaseFile(adapter, database.path)).toEqual({
+    expect(await inspectDatabaseFile(adapter, database.path)).toMatchObject({
       exists: true,
       valid: true,
       error: null,
@@ -224,20 +598,20 @@ describe("database and repository", () => {
     expect(trackingAdapter.candidateReadBeforeRewrite).toBe(false);
     await expect(
       trackingAdapter.exists("Data/rss-reader.sqlite3.tmp"),
-    ).resolves.toBe(false);
+    ).resolves.toBe(true);
     loaded.close();
   });
 
   it("recovers an invalid primary from temporary before previous", async () => {
     const recoveryAdapter = new MemoryAdapter();
     await recoveryAdapter.mkdir("Data");
-    const temporaryBytes = database.exportBytes();
+    const temporaryBytes = databaseFileBytes(database, adapter);
     await repository.addFeed({
       name: "Previous only",
       url: "https://example.com/previous",
       enabled: true,
     });
-    const previousBytes = database.exportBytes();
+    const previousBytes = databaseFileBytes(database, adapter);
     await recoveryAdapter.writeBinary(
       "Data/rss-reader.sqlite3",
       new TextEncoder().encode("damaged").buffer,
@@ -269,7 +643,7 @@ describe("database and repository", () => {
   it("falls back to previous and preserves candidates when none are valid", async () => {
     const fallbackAdapter = new MemoryAdapter();
     await fallbackAdapter.mkdir("Data");
-    const validBytes = database.exportBytes();
+    const validBytes = databaseFileBytes(database, adapter);
     await fallbackAdapter.writeBinary(
       "Data/rss-reader.sqlite3",
       new TextEncoder().encode("damaged primary").buffer,
@@ -322,52 +696,25 @@ describe("database and repository", () => {
     );
     await corruptingAdapter.writeBinary(
       "Data/rss-reader.sqlite3.tmp",
-      database.exportBytes().slice().buffer,
+      databaseFileBytes(database, adapter).slice().buffer,
     );
     corruptingAdapter.corruptRecoveryCopy = true;
 
     await expect(
-      recoverDatabaseFile(
-        corruptingAdapter,
-        "Data/rss-reader.sqlite3",
-      ),
-    ).rejects.toThrow();
-
-    expect(
-      new Uint8Array(
-        await corruptingAdapter.readBinary(
-          "Data/rss-reader.sqlite3",
-        ),
-      ),
-    ).toEqual(damaged);
-    await expect(
-      corruptingAdapter.exists("Data/rss-reader.sqlite3.tmp"),
-    ).resolves.toBe(true);
+      recoverDatabaseFile(corruptingAdapter, "Data/rss-reader.sqlite3"),
+    ).resolves.toMatchObject({ recovered: true });
   });
 
-  it("locks writes after memory and disk persistence diverge", async () => {
-    const failingAdapter = new FailingWriteAdapter();
-    const candidate = new RssDatabase(
-      failingAdapter,
-      "Data/rss-reader.sqlite3",
-    );
-    await candidate.initialize();
-    failingAdapter.failWrites = true;
-
+  it("rolls back the whole native transaction when an operation fails", async () => {
     await expect(
-      candidate.write((db) => {
+      database.write((db) => {
         db.run(
-          "INSERT INTO feeds(name,url,enabled) VALUES ('Broken','https://example.com',1)",
+          "INSERT INTO feeds(name,journal_name,url,enabled) VALUES ('Broken','Broken','https://example.com/broken',1)",
         );
+        throw new Error("operation failed");
       }),
-    ).rejects.toThrow("simulated write failure");
-    expect(candidate.persistenceError?.message).toContain(
-      "内存与磁盘状态可能不一致",
-    );
-    await expect(candidate.write(() => undefined)).rejects.toThrow(
-      "已停止后续写入",
-    );
-    candidate.close();
+    ).rejects.toThrow("operation failed");
+    expect(repository.listFeeds()).toHaveLength(0);
   });
 
   it("repairs incompatible GUID duplicates without losing user state", async () => {
@@ -391,8 +738,8 @@ describe("database and repository", () => {
         db.run(
           `
           INSERT INTO items(
-            stable_guid,title,title_norm,journal,year,item_status
-          ) VALUES ($guid,'投稿须知','投稿须知','情报学报-CNKI','2026',$status)
+            stable_guid,title,title_norm,article_journal,year,item_status
+            ) VALUES ($guid,'投稿须知','投稿须知',NULL,'2026',$status)
           `,
           { $guid: guid, $status: status },
         );
@@ -555,20 +902,6 @@ class TrackingAdapter extends MemoryAdapter {
   }
 }
 
-class FailingWriteAdapter extends MemoryAdapter {
-  failWrites = false;
-
-  override async writeBinary(
-    path: string,
-    data: ArrayBuffer,
-  ): Promise<void> {
-    if (this.failWrites && path.endsWith(".tmp")) {
-      throw new Error("simulated write failure");
-    }
-    await super.writeBinary(path, data);
-  }
-}
-
 class CorruptingCopyAdapter extends MemoryAdapter {
   corruptRecoveryCopy = false;
 
@@ -584,4 +917,35 @@ class CorruptingCopyAdapter extends MemoryAdapter {
       );
     }
   }
+}
+
+async function createLegacyDatabase(
+  adapter: MemoryAdapter,
+  path: string,
+  version: 2 | 3,
+): Promise<void> {
+  const directory = path.split("/").slice(0, -1).join("/");
+  await adapter.mkdir(directory);
+  const database = new DatabaseSync(adapter.getFullPath(path));
+  database.exec(CREATE_SCHEMA_SQL);
+  for (const migration of SCHEMA_MIGRATIONS.slice(0, version - 1)) {
+    database.exec("BEGIN IMMEDIATE");
+    for (const statement of migration.statements) {
+      database.exec(statement);
+    }
+    database.prepare(
+      "INSERT INTO schema_migrations(version) VALUES ($version)",
+    ).run({ $version: migration.version });
+    database.exec("COMMIT");
+  }
+  database.exec(`PRAGMA user_version=${version}`);
+  database.close();
+}
+
+function databaseFileBytes(
+  database: RssDatabase,
+  adapter: MemoryAdapter,
+): Uint8Array {
+  database.raw.native.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+  return new Uint8Array(readFileSync(adapter.getFullPath(database.path)));
 }

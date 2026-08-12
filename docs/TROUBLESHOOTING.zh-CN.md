@@ -22,9 +22,9 @@
 
 备份保存在所选数据目录的 `backups/` 子目录。
 
-如果保存过程被中断，插件仅在正式库缺失或校验失败时，依次检查
-`rss-reader.sqlite3.tmp` 和 `rss-reader.sqlite3.previous`。自动恢复前不要重命名或删除
-这些文件。若所有快照均无效，插件会保留它们并要求从 `backups/` 恢复。
+如果保存或恢复过程被中断，插件仅在正式库缺失或校验失败时，依次检查
+`rss-reader.sqlite3.tmp`、`rss-reader.sqlite3.previous`、`rss-reader.sqlite3.incoming` 和
+`rss-reader.sqlite3.rollback`。自动恢复前不要重命名或删除这些文件。若所有快照均无效，插件会保留它们并要求从 `backups/` 恢复。
 
 ## 将数据移动到其他目录
 
@@ -53,6 +53,7 @@
 检查以下三项：
 
 - OpenAI 兼容的 HTTPS API 地址。
+- 或者使用 `localhost`、`127.0.0.1`、`::1` 的本机 HTTP 地址；其他 HTTP 地址会被拒绝。
 - 保存 API Key 的 SecretStorage 条目。
 - 服务支持的有效模型名称。
 
@@ -66,6 +67,12 @@
 - 英文及其他语言环境回退英文。
 
 修改应用语言后，请重新加载应用，或禁用再启用插件。标题翻译的目标语言与界面语言相互独立。
+
+## 运行时提示不支持 node:sqlite
+
+v1.4.0 不再包含 `sql.js` fallback。请更新到提供 Node.js 22.16+、`node:sqlite`
+`DatabaseSync` 和 SQLite Backup API 的 Obsidian 桌面版；更新后重新打开阅读器。数据库不会
+在不满足要求的运行时被载入。
 
 ## 安装与升级
 

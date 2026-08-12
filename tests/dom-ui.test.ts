@@ -7,6 +7,7 @@ import {
 } from "vitest";
 
 import { executeUiAction } from "../src/views/ui-action";
+import { recommendationExplanation } from "../src/views/recommendation-explanation";
 
 describe("DOM UI contracts", () => {
   it("reports rejected actions and restores button state", async () => {
@@ -42,5 +43,16 @@ describe("DOM UI contracts", () => {
     expect(element.ownerDocument.defaultView).toBe(popoutWindow);
     expect(element.ownerDocument.defaultView).not.toBe(mainWindow);
     expect(element instanceof popoutWindow.HTMLElement).toBe(true);
+  });
+
+  it("does not expose recommendation context below negative keywords", () => {
+    const explanation = recommendationExplanation(JSON.stringify({
+      positive: [{ keyword: "library" }, { keyword: "journal:science" }],
+      negative: [{ keyword: "noise" }, { keyword: "feed:archive" }],
+    }));
+    expect(explanation.positive).toEqual(["library"]);
+    expect(explanation.negative).toEqual(["noise"]);
+    expect(explanation.positive.join(" ")).not.toContain("journal:");
+    expect(explanation.negative.join(" ")).not.toContain("feed:");
   });
 });

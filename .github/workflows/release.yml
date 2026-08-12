@@ -15,12 +15,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Verify tag and manifest version
@@ -35,23 +35,40 @@ jobs:
       - name: Validate and build
         run: |
           npm run lint -- --max-warnings=0
+          npm run check:i18n
           npm test
           npm run build
+          npm run package
+
+      - name: Check packaged bundle and file set
+        shell: bash
+        run: |
+          test "$(find build -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')" = "3"
+          test "$(find build -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" = "0"
+          test -f build/main.js
+          test -f build/manifest.json
+          test -f build/styles.css
+          ! grep -Eiq 'sql[.]js|node_modules/(fs|path)' build/main.js
+          grep -Eq 'node:sqlite' build/main.js
 
       - name: Generate release attestations
         uses: actions/attest@v4
         with:
           subject-path: |
-            main.js
-            manifest.json
-            styles.css
+            build/main.js
+            build/manifest.json
+            build/styles.css
 
       - name: Publish supported release assets
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >-
-          gh release create "$GITHUB_REF_NAME"
-          main.js manifest.json styles.css
-          --generate-notes
-          --title "$GITHUB_REF_NAME"
-          --verify-tag
+        shell: bash
+        run: |
+          release_version="${GITHUB_REF_NAME//./_}"
+          release_notes="docs/V${release_version}_RELEASE.md"
+          test -f "$release_notes"
+          gh release create "$GITHUB_REF_NAME" \
+            build/main.js build/manifest.json build/styles.css \
+            --notes-file "$release_notes" \
+            --title "$GITHUB_REF_NAME" \
+            --verify-tag

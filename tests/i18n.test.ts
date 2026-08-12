@@ -46,6 +46,24 @@ describe("UI localization", () => {
     expect(formatDate("2026-07-30T12:00:00Z")).not.toBe("");
   });
 
+  it("localizes recent-update skip notices in both supported languages", () => {
+    setUiLanguage("zh-CN");
+    expect(t("update.done_with_recent_skips", {
+      trigger: "启动时自动更新",
+      newItems: 0,
+      failed: 0,
+      skipped: 3,
+    })).toContain("3 个订阅近期更新过，已自动跳过");
+
+    setUiLanguage("en");
+    expect(t("update.done_with_recent_skips", {
+      trigger: "Automatic startup update",
+      newItems: 0,
+      failed: 0,
+      skipped: 3,
+    })).toContain("3 feeds were updated recently and skipped automatically");
+  });
+
   it("translates basket labels after the UI language is initialized", () => {
     setUiLanguage("en");
     expect([

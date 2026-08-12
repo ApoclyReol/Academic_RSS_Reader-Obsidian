@@ -1,14 +1,20 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   calibrateThresholds,
+  buildDocument,
   extractDocumentTerms,
   scoreToTier,
   sparseVectorWidth,
   stratifiedSplit,
+  trainLogisticCore,
+  trainLogisticWithWorker,
   trainLogisticSparse,
   tokenize,
+  vectorizeDocument,
+  vectorizeItem,
 } from "../src/services/recommendation-service";
+import type { RssItem } from "../src/models/domain";
 import { parseTier } from "../src/services/relevance";
 
 describe("recommendation contracts", () => {
@@ -54,6 +60,69 @@ describe("recommendation contracts", () => {
     expect(Number.isFinite(model.intercept)).toBe(true);
   });
 
+  it("keeps Worker and fallback training results identical", async () => {
+    const vectors = [
+      [{ index: 0, value: 1 }, { index: 2, value: 0.5 }],
+      [{ index: 0, value: 0.8 }, { index: 1, value: 0.2 }],
+      [{ index: 1, value: 1 }, { index: 2, value: 0.5 }],
+      [{ index: 1, value: 0.8 }, { index: 2, value: 0.2 }],
+    ];
+    const labels = [1, 1, 0, 0];
+    const trainingIndexes = [0, 1, 2, 3];
+    const fallback = await trainLogisticSparse(
+      vectors,
+      labels,
+      2,
+      2,
+      trainingIndexes,
+    );
+    expect(trainLogisticCore(vectors, labels, trainingIndexes)).toEqual(
+      fallback,
+    );
+
+    class FakeWorker {
+      onmessage: ((event: { data: unknown }) => void) | null = null;
+      onerror: ((event: { message: string }) => void) | null = null;
+
+      postMessage(data: {
+        v: typeof vectors;
+        l: number[];
+        ix: number[];
+      }): void {
+        queueMicrotask(() => {
+          this.onmessage?.({
+            data: trainLogisticCore(data.v, data.l, data.ix),
+          });
+        });
+      }
+
+      terminate(): void {}
+    }
+
+    vi.stubGlobal("Worker", FakeWorker);
+    const createObjectUrl = vi
+      .spyOn(URL, "createObjectURL")
+      .mockReturnValue("blob:academic-rss-reader-test");
+    const revokeObjectUrl = vi
+      .spyOn(URL, "revokeObjectURL")
+      .mockImplementation(() => undefined);
+    try {
+      await expect(
+        trainLogisticWithWorker(
+          vectors,
+          labels,
+          2,
+          2,
+          trainingIndexes,
+        ),
+      ).resolves.toEqual(fallback);
+    } finally {
+      createObjectUrl.mockRestore();
+      revokeObjectUrl.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("calculates large sparse widths without spreading arguments", () => {
     const vectors = Array.from({ length: 5_000 }, (_, row) =>
       Array.from({ length: 120 }, (_, column) => ({
@@ -84,5 +153,38 @@ describe("recommendation contracts", () => {
     expect(parseTier(" high ")).toBe("high");
     expect(parseTier("LOW")).toBe("low");
     expect(() => parseTier("high relevance")).toThrow();
+  });
+
+  it("uses identical vectors for training documents and formal item scoring", () => {
+    const item = {
+      id: 1,
+      stableGuid: "guid",
+      title: "Digital library research",
+      titleNorm: "digital library research",
+      authors: "Alice",
+      journal: "Journal A",
+      feedNames: "Feed A",
+      year: "2026",
+      doi: "",
+      link: "",
+      pubDate: "2026-01-01T00:00:00.000Z",
+      summary: "Knowledge organization methods",
+      firstSeenAt: "",
+      lastSeenAt: "",
+      itemStatus: "unread",
+      finalTier: null,
+      keywordScore: null,
+      llmTier: null,
+      matchedKeywords: "{}",
+      translatedTitle: null,
+      translatedAbstract: null,
+      titleTranslationStatus: null,
+      abstractTranslationStatus: null,
+    } satisfies RssItem;
+    const vocabulary = ["digital", "library", "journal:journal", "feed:feed"];
+    const idf = [1, 1, 1, 1];
+    expect(vectorizeItem(item, vocabulary, idf)).toEqual(
+      vectorizeDocument(buildDocument(item), vocabulary, idf),
+    );
   });
 });

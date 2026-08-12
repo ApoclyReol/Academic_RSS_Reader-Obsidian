@@ -148,14 +148,31 @@
 }
 
 .rss-reader__item-title {
-  align-items: baseline;
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--size-4-1) var(--size-4-2);
+  position: relative;
 }
 
 .rss-reader__item h3 {
+  display: -webkit-box;
+  height: 2.8em;
+  line-height: 1.4;
   margin: 0;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.rss-reader__item > .rss-reader__caption {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rss-reader__item-title .rss-reader__translation-status {
+  background: var(--background-secondary);
+  bottom: 0;
+  inset-inline-end: 0;
+  padding-inline-start: var(--size-4-2);
+  position: absolute;
 }
 
 .rss-reader__keyword-relevance {
@@ -165,7 +182,53 @@
 }
 
 .rss-reader__item-relevance {
+  align-items: center;
+  display: grid;
+  column-gap: var(--size-4-2);
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: repeat(2, minmax(1.2em, auto));
   margin-top: var(--size-4-1);
+  min-height: 2.6em;
+  row-gap: 0;
+}
+
+.rss-reader__relevance-cell {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.2;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rss-reader__relevance-cell.is-status {
+  align-self: stretch;
+  display: flex;
+  grid-row: 1 / span 2;
+  overflow: visible;
+}
+
+.rss-reader__relevance-cell.is-positive {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.rss-reader__relevance-cell.is-negative {
+  grid-column: 2;
+  grid-row: 2;
+}
+
+.rss-reader__relevance-cell.is-status .rss-reader__keyword-relevance {
+  align-items: center;
+  background: var(--background-primary-alt);
+  border: 1px solid currentColor;
+  border-radius: var(--radius-s);
+  display: inline-flex;
+  font-size: var(--font-ui-small);
+  justify-content: center;
+  min-width: 4.5em;
+  padding: 0 var(--size-4-2);
 }
 
 .rss-reader__keyword-relevance.is-high {

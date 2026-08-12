@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 
 import { XMLParser } from "fast-xml-parser";
+import { SyntaxValidator } from "fast-xml-validator";
 
+import { t } from "../i18n";
 import type { ParsedItem } from "../models/domain";
 
 interface XmlNode {
@@ -13,6 +15,22 @@ export interface ParsedFeed {
   items: ParsedItem[];
 }
 
+export const MAX_FEED_XML_BYTES = 10 * 1024 * 1024;
+
+const TRACKING_QUERY_PARAMETERS = new Set([
+  "fbclid",
+  "gclid",
+  "dgcid",
+  "dclid",
+  "gbraid",
+  "wbraid",
+  "msclkid",
+  "mc_cid",
+  "mc_eid",
+  "_ga",
+  "_gl",
+]);
+
 const parser = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: "@_",
@@ -21,24 +39,60 @@ const parser = new XMLParser({
   trimValues: true,
   processEntities: true,
 });
-
-export function parseFeed(xml: string, fallbackName: string): ParsedFeed {
-  const document = parser.parse(xml) as XmlNode;
-  const rssChannel = objectValue(objectValue(document.rss).channel);
+const xmlValidator = new SyntaxValidator({ multipleRoots: false });
+export function parseFeed(
+  xml: string,
+  fallbackName: string,
+  fallbackJournal = fallbackName,
+): ParsedFeed {
+  validateFeedXml(xml);
+  let document: XmlNode;
+  try {
+    document = parser.parse(xml) as XmlNode;
+  } catch (error) {
+    throw new Error(t("feed.invalid_xml", {
+      error: error instanceof Error ? error.message : String(error),
+    }));
+  }
+  const rss = objectValue(document.rss);
+  const rssChannel = objectValue(rss.channel);
   const atomFeed = objectValue(document.feed);
-  const channel = Object.keys(rssChannel).length > 0 ? rssChannel : atomFeed;
-  const rawEntries =
-    Object.keys(rssChannel).length > 0
-      ? arrayValue(channel.item)
-      : arrayValue(channel.entry);
+  const isRss = Object.prototype.hasOwnProperty.call(document, "rss") &&
+    Object.prototype.hasOwnProperty.call(rss, "channel");
+  const isAtom = Object.prototype.hasOwnProperty.call(document, "feed");
+  if (!isRss && !isAtom) {
+    throw new Error(t("feed.invalid_root"));
+  }
+  const channel = isRss ? rssChannel : atomFeed;
+  const rawEntries = isRss
+    ? arrayValue(channel.item)
+    : arrayValue(channel.entry);
   const title = textValue(channel.title) || fallbackName;
 
   return {
     title,
     items: rawEntries
-      .map((entry) => entryToItem(objectValue(entry), fallbackName))
+      .map((entry) =>
+        entryToItem(objectValue(entry), fallbackName, fallbackJournal),
+      )
       .filter((item) => Boolean(item.title)),
   };
+}
+
+export function validateFeedXml(xml: string): void {
+  if (utf8ByteLength(xml) > MAX_FEED_XML_BYTES) {
+    throw new Error(t("feed.response_too_large"));
+  }
+  if (/<!DOCTYPE\b/i.test(xml)) {
+    throw new Error(t("feed.doctype_rejected"));
+  }
+  try {
+    xmlValidator.validate(xml);
+  } catch (error) {
+    throw new Error(t("feed.invalid_xml", {
+      error: error instanceof Error ? error.message : String(error),
+    }));
+  }
 }
 
 export function stripHtml(value: string): string {
@@ -75,13 +129,21 @@ export function canonicalizeLink(value: string): string {
   }
   try {
     const url = new URL(link);
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      return "";
+    }
     url.hash = "";
-    if (!url.hostname.toLocaleLowerCase().includes("cnki")) {
-      url.search = "";
+    for (const parameter of [...url.searchParams.keys()]) {
+      if (
+        parameter.toLocaleLowerCase().startsWith("utm_") ||
+        TRACKING_QUERY_PARAMETERS.has(parameter.toLocaleLowerCase())
+      ) {
+        url.searchParams.delete(parameter);
+      }
     }
     return url.toString();
   } catch {
-    return link;
+    return "";
   }
 }
 
@@ -92,29 +154,61 @@ export function findDoi(...values: string[]): string {
   return match?.[0]?.replace(/[.,;)\]]+$/, "").toLocaleLowerCase() ?? "";
 }
 
+export function publisherIdentity(value: string): string {
+  const link = value.trim();
+  if (!link) {
+    return "";
+  }
+  try {
+    const url = new URL(link);
+    const hostname = url.hostname.toLocaleLowerCase();
+    if (
+      hostname === "sciencedirect.com" ||
+      hostname.endsWith(".sciencedirect.com")
+    ) {
+      const match = url.pathname.match(/\/pii\/([^/]+)/i);
+      if (match?.[1]) {
+        return `sciencedirect-pii:${decodeURIComponent(match[1]).toLocaleUpperCase()}`;
+      }
+    }
+    return "";
+  } catch {
+    return "";
+  }
+}
+
 export function stableGuid(input: {
   title: string;
   journal: string;
   year: string;
   authors: string;
   doi: string;
+  link?: string;
 }): string {
-  if (input.doi) {
-    return `doi:${input.doi}`;
+  const doi = input.doi.trim().toLocaleLowerCase().replace(/^doi:\s*/i, "");
+  if (doi) {
+    return `doi:${doi}`;
   }
   const title = normalizeText(input.title);
   const author = normalizeText(input.authors).slice(0, 48);
+  const publisherId = publisherIdentity(input.link ?? "");
   const identity = author
     ? [title, input.year || "", author]
+    : publisherId
+      ? [publisherId]
     : [title, input.year || "", normalizeText(input.journal)];
   const digest = createHash("sha256")
     .update(identity.join("|"))
     .digest("hex")
     .slice(0, 24);
-  return `cnki-local:${digest}`;
+  return `${publisherId && !author ? "publisher" : "cnki-local"}:${digest}`;
 }
 
-function entryToItem(entry: XmlNode, feedName: string): ParsedItem {
+function entryToItem(
+  entry: XmlNode,
+  feedName: string,
+  fallbackJournal: string,
+): ParsedItem {
   const title = textValue(entry.title);
   const summary = stripHtml(
     firstText(
@@ -125,6 +219,7 @@ function entryToItem(entry: XmlNode, feedName: string): ParsedItem {
     ),
   );
   const link = canonicalizeLink(extractLink(entry));
+  const journal = extractJournal(entry);
   const authors = extractAuthors(entry, summary);
   const pubDate = parseDate(
     firstText(entry.pubDate, entry.published, entry.updated, entry.date),
@@ -139,21 +234,33 @@ function entryToItem(entry: XmlNode, feedName: string): ParsedItem {
   return {
     stableGuid: stableGuid({
       title,
-      journal: feedName.trim(),
+      journal: journal || fallbackJournal.trim() || feedName.trim(),
       year,
       authors,
       doi,
+      link,
     }),
     title,
     titleNorm: normalizeText(title),
     authors,
-    journal: feedName.trim(),
+    journal: journal || fallbackJournal.trim() || feedName.trim(),
+    articleJournal: journal,
     year,
     doi,
     link,
     pubDate,
     summary,
   };
+}
+
+function extractJournal(entry: XmlNode): string {
+  return firstText(
+    entry.journal,
+    entry["prism:publicationName"],
+    entry["dc:source"],
+    entry.source,
+    entry.publication,
+  );
 }
 
 function extractLink(entry: XmlNode): string {
@@ -238,4 +345,8 @@ function arrayValue(value: unknown): unknown[] {
     return [];
   }
   return Array.isArray(value) ? value : [value];
+}
+
+function utf8ByteLength(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
 }

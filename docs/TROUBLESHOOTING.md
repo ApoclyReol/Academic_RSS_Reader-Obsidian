@@ -20,11 +20,12 @@ The original file is kept unchanged when validation fails.
 3. Do not replace or delete the original database while diagnosing the problem.
 4. If a valid backup exists, use **Restore latest backup** from settings. The plugin creates another protection backup before restoration.
 
-If a save was interrupted, the plugin automatically checks
-`rss-reader.sqlite3.tmp` and `rss-reader.sqlite3.previous`, in that order, but
-only after the primary database is missing or fails validation. Do not rename or
-delete these files before the automatic recovery attempt. If all snapshots are
-invalid, the plugin preserves them and asks you to restore from `backups/`.
+If a save or restore was interrupted, the plugin automatically checks
+`rss-reader.sqlite3.tmp`, `rss-reader.sqlite3.previous`,
+`rss-reader.sqlite3.incoming`, and `rss-reader.sqlite3.rollback`, in that order,
+but only after the primary database is missing or fails validation. Do not rename
+or delete these files before the automatic recovery attempt. If all snapshots
+are invalid, the plugin preserves them and asks you to restore from `backups/`.
 
 Backups are stored in the selected data directory's `backups/` subdirectory.
 
@@ -55,6 +56,7 @@ Disable title translation to continue using original titles.
 Check all three settings:
 
 - An OpenAI-compatible HTTPS API endpoint.
+- Or an HTTP endpoint on `localhost`, `127.0.0.1`, or `::1`; other HTTP endpoints are rejected.
 - A SecretStorage entry containing the API key.
 - A valid model name supported by the configured service.
 
@@ -68,6 +70,12 @@ The plugin reads the app language during startup:
 - English and unsupported locales use English.
 
 After changing the app language, reload the app or disable and re-enable the plugin. The title-translation target is independent of the interface language.
+
+## The runtime does not support node:sqlite
+
+v1.4.0 has no `sql.js` fallback. Update to an Obsidian desktop release that
+provides Node.js 22.16+, `node:sqlite` `DatabaseSync`, and the SQLite Backup API,
+then reopen the reader. The database is not loaded on an unsupported runtime.
 
 ## Installation and upgrades
 

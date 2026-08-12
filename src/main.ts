@@ -28,6 +28,7 @@ import { GoogleWebTranslationProvider } from "./services/translation-provider";
 import { TranslationService } from "./services/translation-service";
 import { resolveVaultDirectoryPath } from "./services/vault-path";
 import { RssReaderView } from "./views/rss-reader-view";
+import type { TranslationChange } from "./services/translation-service";
 
 export type DatabaseState =
   | "unconfigured"
@@ -111,10 +112,11 @@ export default class RssReaderPlugin extends Plugin {
     });
     this.settingTab = new RssReaderSettingTab(this.app, this);
     this.addSettingTab(this.settingTab);
-    this.register(() => {
-      this.settingTab = null;
-      void this.disposeContext(this.context).catch(() => undefined);
-    });
+  }
+
+  onunload(): void {
+    this.settingTab = null;
+    void this.disposeContext(this.context).catch(() => undefined);
   }
 
   async loadSettings(): Promise<void> {
@@ -158,9 +160,11 @@ export default class RssReaderPlugin extends Plugin {
     }
   }
 
-  async saveSettings(): Promise<void> {
+  async saveSettings(refreshReader = true): Promise<void> {
     await this.saveData(this.settings);
-    await this.refreshViews();
+    if (refreshReader) {
+      await this.refreshViews();
+    }
   }
 
   isDatabaseReady(): boolean {
@@ -337,6 +341,12 @@ export default class RssReaderPlugin extends Plugin {
       this.operationCoordinator.acquireTransition();
     let restoredSource!: string;
     try {
+      await Promise.all([
+        context.feedService.stop(),
+        context.recommendationService.stop(),
+        context.translationService.stop(),
+        context.llmService.stop(),
+      ]);
       const backupDirectory = this.getCurrentBackupDirectory();
       if (!backupDirectory) {
         throw new Error(t("ui.configure_and_load_a_database_first"));
@@ -349,7 +359,7 @@ export default class RssReaderPlugin extends Plugin {
         entries
           .filter((path) =>
             /^(before-|manual-).*\.(sqlite3|sqlite|db)$/i.test(
-              path.split("/").at(-1) ?? "",
+              path.split("/").slice(-1)[0] ?? "",
             ),
           )
           .map(async (path) => {
@@ -385,6 +395,7 @@ export default class RssReaderPlugin extends Plugin {
       restoredSource = source;
     } finally {
       releaseTransition();
+      context.llmService.resume();
       context.translationService.resume();
     }
     await this.refreshViews();
@@ -556,6 +567,7 @@ export default class RssReaderPlugin extends Plugin {
             }
           },
           onSettingsChanged: async () => this.refreshViews(),
+          onCancelled: () => recommendationService.cancelTraining(),
         },
         timerWindow,
         this.operationCoordinator,
@@ -571,15 +583,21 @@ export default class RssReaderPlugin extends Plugin {
           () => this.settings,
           () => this.getLlmApiKey(),
           this.operationCoordinator,
+          timerWindow,
         ),
         unsubscribeTranslation: () => undefined,
       };
-      context.unsubscribeTranslation = translationService.onChange(() => {
+      context.unsubscribeTranslation = translationService.onChange((change: TranslationChange) => {
         for (const leaf of this.app.workspace.getLeavesOfType(
           RSS_READER_VIEW_TYPE,
         )) {
           if (leaf.view instanceof RssReaderView) {
-            leaf.view.refreshTranslatedTitles();
+            leaf.view.refreshTranslatedTitle(
+              change.itemId,
+              change.field,
+              change.targetLanguage,
+              change.status,
+            );
           }
         }
       });
@@ -611,9 +629,12 @@ export default class RssReaderPlugin extends Plugin {
       return;
     }
     context.unsubscribeTranslation();
-    context.feedService.cancelUpdates();
-    context.recommendationService.cancelTraining();
-    await context.translationService.stop();
+    await Promise.all([
+      context.feedService.stop(),
+      context.recommendationService.stop(),
+      context.translationService.stop(),
+      context.llmService.stop(),
+    ]);
     let drainError: unknown;
     try {
       await context.database.drain();
@@ -637,9 +658,12 @@ export default class RssReaderPlugin extends Plugin {
 
   private async hasRecoveryCandidate(databasePath: string): Promise<boolean> {
     return (
-      (await this.app.vault.adapter.exists(`${databasePath}.tmp`)) ||
-      (await this.app.vault.adapter.exists(`${databasePath}.previous`))
-    );
+      await Promise.all(
+        [".tmp", ".previous", ".incoming", ".rollback"].map((suffix) =>
+          this.app.vault.adapter.exists(`${databasePath}${suffix}`),
+        ),
+      )
+    ).some(Boolean);
   }
 
   private handleDatabaseStorageFailure(
@@ -676,9 +700,13 @@ export default class RssReaderPlugin extends Plugin {
       return;
     }
     const notice = new Notice(t("update.in_progress", { trigger }), 0);
+    let skipped = 0;
     try {
       const results = await this.feedService.updateFeeds(undefined, {
         automatic,
+        onSkipped: (count) => {
+          skipped = count;
+        },
         onProgress: ({ completed, total, feedName }) => {
           notice.setMessage(t("ui.updating_feeds_current_total_feed", {
             current: completed,
@@ -692,11 +720,20 @@ export default class RssReaderPlugin extends Plugin {
         0,
       );
       const failed = results.filter((result) => result.error).length;
-      notice.setMessage(t("update.done", {
-        trigger,
-        newItems,
-        failed,
-      }));
+      notice.setMessage(
+        automatic && skipped > 0
+          ? t("update.done_with_recent_skips", {
+              trigger,
+              newItems,
+              failed,
+              skipped,
+            })
+          : t("update.done", {
+              trigger,
+              newItems,
+              failed,
+            }),
+      );
     } catch (error) {
       notice.setMessage(t("update.failed", {
         trigger,
