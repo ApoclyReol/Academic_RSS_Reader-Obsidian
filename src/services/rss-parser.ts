@@ -56,17 +56,23 @@ export function parseFeed(
   }
   const rss = objectValue(document.rss);
   const rssChannel = objectValue(rss.channel);
+  const rdf = objectValue(document["rdf:RDF"]);
+  const rdfChannel = objectValue(rdf.channel);
   const atomFeed = objectValue(document.feed);
   const isRss = Object.prototype.hasOwnProperty.call(document, "rss") &&
     Object.prototype.hasOwnProperty.call(rss, "channel");
+  const isRdf = Object.prototype.hasOwnProperty.call(document, "rdf:RDF") &&
+    Object.prototype.hasOwnProperty.call(rdf, "channel");
   const isAtom = Object.prototype.hasOwnProperty.call(document, "feed");
-  if (!isRss && !isAtom) {
+  if (!isRss && !isRdf && !isAtom) {
     throw new Error(t("feed.invalid_root"));
   }
-  const channel = isRss ? rssChannel : atomFeed;
+  const channel = isRss ? rssChannel : isRdf ? rdfChannel : atomFeed;
   const rawEntries = isRss
     ? arrayValue(channel.item)
-    : arrayValue(channel.entry);
+    : isRdf
+      ? arrayValue(rdf.item)
+      : arrayValue(channel.entry);
   const title = textValue(channel.title) || fallbackName;
 
   return {
@@ -222,7 +228,13 @@ function entryToItem(
   const journal = extractJournal(entry);
   const authors = extractAuthors(entry, summary);
   const pubDate = parseDate(
-    firstText(entry.pubDate, entry.published, entry.updated, entry.date),
+    firstText(
+      entry.pubDate,
+      entry.published,
+      entry.updated,
+      entry.date,
+      entry["dc:date"],
+    ),
   );
   const year = pubDate.slice(0, 4) || inferYear(title, summary);
   const doi = findDoi(

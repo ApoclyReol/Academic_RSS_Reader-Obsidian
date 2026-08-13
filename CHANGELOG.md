@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.4.1 — 2026-08-13
+
+- 修复 Obsidian 社区扫描器将 Grid 的 `column-gap` 识别为部分支持的
+  `multicolumn` 特性而产生的兼容性警告；改用等价的
+  `gap: 0 var(--size-4-2)`，不改变文献卡片布局。
+- 支持以 `<rdf:RDF>` 为根节点的 RSS 1.0 订阅，修复 Nature 期刊 RSS 被误报为无效
+  RSS/Atom 的问题。
+- 将 `node:sqlite` 显式配置为 esbuild external，修复 Node.js 22.23.2
+  干净环境无法解析该模块而导致的社区构建验证失败；CI 新增同版本独立构建任务，避免
+  Node.js 24 的 builtin 列表掩盖兼容问题。
+
 ## 1.4.0 — 2026-08-13
 
 - 将桌面数据库底座从 `sql.js` 迁移到原生 `node:sqlite` `DatabaseSync`，启用 WAL、外键、忙等待、串行写队列和 SQLite Backup API；不满足 Node.js 22.16+ 运行时能力时阻止载入。

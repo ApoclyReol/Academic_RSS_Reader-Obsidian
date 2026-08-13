@@ -9,7 +9,7 @@ Academic RSS Reader is a desktop Obsidian plugin for the first pass of academic 
 The plugin focuses on the step between “new papers arrived” and “I know what deserves a closer read”. It is designed to reduce repetitive triage, not to replace a reference manager or a full-text database.
 
 > [!IMPORTANT]
-> Current recommended version: **1.4.0**. This version requires Obsidian **1.13.0 or later** and is desktop-only. Its bundled runtime must also provide Node.js **22.16 or later**, `node:sqlite` `DatabaseSync`, and the SQLite Backup API. Update Obsidian before installing or updating when possible.
+> Current recommended version: **1.4.1**. This version requires Obsidian **1.13.0 or later** and is desktop-only. Its bundled runtime must also provide Node.js **22.16 or later**, `node:sqlite` `DatabaseSync`, and the SQLite Backup API. Update Obsidian before installing or updating when possible.
 
 ## Why use Academic RSS Reader
 
@@ -149,6 +149,7 @@ The plugin does not create or open a database during startup. Database creation 
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [Security and privacy](SECURITY.md)
 - [Changelog](CHANGELOG.md)
+- [v1.4.1 release notes](docs/V1_4_1_RELEASE.md)
 - [v1.4.0 release notes](docs/V1_4_0_RELEASE.md)
 - [v1.3.0 release notes](docs/V1_3_0_RELEASE.md)
 - [v1.2.0 release notes](docs/V1_2_0_RELEASE.md)

@@ -19,6 +19,8 @@
 ## 发布文档
 
 - [版本记录](../CHANGELOG.md)
+- [v1.4.1 中文发布说明](V1_4_1_RELEASE.zh-CN.md)
+- [v1.4.1 English release notes](V1_4_1_RELEASE.md)
 - [v1.4.0 中文发布说明](V1_4_0_RELEASE.zh-CN.md)
 - [v1.4.0 English release notes](V1_4_0_RELEASE.md)
 

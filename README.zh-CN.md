@@ -9,7 +9,7 @@ Academic RSS Reader 是一款面向学术文献初筛的 Obsidian 桌面插件�
 它关注的是“新文献到达”与“知道哪些值得进一步阅读”之间的初筛环节：减少重复整理，让你更快回到真正值得投入时间的文献上，而不是替代文献管理器或全文数据库。
 
 > [!IMPORTANT]
-> 当前推荐版本：**1.4.0**。本版本要求 Obsidian **1.13.0 或更高版本**，仅支持桌面端；实际运行还需要 Obsidian 内置的 Node.js **22.16 或更高版本**提供 `node:sqlite` 的 `DatabaseSync` 和 SQLite Backup API。安装或更新前，建议先升级到最新可用的 Obsidian 桌面版。
+> 当前推荐版本：**1.4.1**。本版本要求 Obsidian **1.13.0 或更高版本**，仅支持桌面端；实际运行还需要 Obsidian 内置的 Node.js **22.16 或更高版本**提供 `node:sqlite` 的 `DatabaseSync` 和 SQLite Backup API。安装或更新前，建议先升级到最新可用的 Obsidian 桌面版。
 
 ## 为什么使用 Academic RSS Reader
 
@@ -149,6 +149,7 @@ Academic RSS Reader 不要求注册账户，不运行遥测，也没有开发者
 - [故障排查](docs/TROUBLESHOOTING.zh-CN.md)
 - [安全与隐私](SECURITY.md)
 - [版本记录](CHANGELOG.md)
+- [v1.4.1 发布说明](docs/V1_4_1_RELEASE.zh-CN.md)
 - [v1.4.0 发布说明](docs/V1_4_0_RELEASE.zh-CN.md)
 - [v1.3.0 发布说明](docs/V1_3_0_RELEASE.md)
 - [v1.2.0 发布说明](docs/V1_2_0_RELEASE.md)

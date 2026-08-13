@@ -49,6 +49,49 @@ describe("RSS parser", () => {
     expect(result.items[0]?.authors).toBe("Alice");
   });
 
+  it("parses RSS 1.0 RDF feeds used by Nature journals", () => {
+    const result = parseFeed(
+      `<rdf:RDF
+        xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+        xmlns:dc="http://purl.org/dc/elements/1.1/"
+        xmlns:content="http://purl.org/rss/1.0/modules/content/"
+        xmlns:prism="http://prismstandard.org/namespaces/basic/2.0/"
+        xmlns="http://purl.org/rss/1.0/">
+        <channel rdf:about="https://www.nature.com/palcomms.rss">
+          <title>Humanities and Social Sciences Communications</title>
+        </channel>
+        <item rdf:about="https://www.nature.com/articles/s41599-026-08691-x">
+          <title><![CDATA[Service trade liberalization]]></title>
+          <link>https://www.nature.com/articles/s41599-026-08691-x</link>
+          <content:encoded><![CDATA[
+            <p>doi:10.1057/s41599-026-08691-x</p>
+          ]]></content:encoded>
+          <dc:creator>Men Zhang</dc:creator>
+          <dc:creator>Yong Zhou</dc:creator>
+          <dc:identifier>doi:10.1057/s41599-026-08691-x</dc:identifier>
+          <dc:date>2026-08-12</dc:date>
+          <prism:publicationName>
+            Humanities and Social Sciences Communications
+          </prism:publicationName>
+        </item>
+      </rdf:RDF>`,
+      "Nature fallback",
+    );
+
+    expect(result.title).toBe(
+      "Humanities and Social Sciences Communications",
+    );
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]).toMatchObject({
+      title: "Service trade liberalization",
+      authors: "Men Zhang; Yong Zhou",
+      journal: "Humanities and Social Sciences Communications",
+      year: "2026",
+      doi: "10.1057/s41599-026-08691-x",
+      link: "https://www.nature.com/articles/s41599-026-08691-x",
+    });
+  });
+
   it("preserves business query parameters and removes known tracking parameters", () => {
     const link =
       "https://kns.cnki.net/kcms/detail/detail.aspx?dbcode=CJFD&filename=ABC";
@@ -142,6 +185,12 @@ describe("RSS parser", () => {
     )).toEqual({ title: "Fallback", items: [] });
     expect(parseFeed(
       "<feed xmlns='http://www.w3.org/2005/Atom' />",
+      "Fallback",
+    )).toEqual({ title: "Fallback", items: [] });
+    expect(parseFeed(
+      `<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+        <channel />
+      </rdf:RDF>`,
       "Fallback",
     )).toEqual({ title: "Fallback", items: [] });
   });

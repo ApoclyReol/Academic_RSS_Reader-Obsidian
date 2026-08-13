@@ -24,6 +24,7 @@ const context = await esbuild.context({
     "@lezer/common",
     "@lezer/highlight",
     "@lezer/lr",
+    "node:sqlite",
     ...builtinModules,
     ...builtinModules.map((moduleName) => `node:${moduleName}`),
   ],

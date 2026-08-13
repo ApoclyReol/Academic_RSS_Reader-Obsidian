@@ -184,12 +184,11 @@
 .rss-reader__item-relevance {
   align-items: center;
   display: grid;
-  column-gap: var(--size-4-2);
+  gap: 0 var(--size-4-2);
   grid-template-columns: auto minmax(0, 1fr);
   grid-template-rows: repeat(2, minmax(1.2em, auto));
   margin-top: var(--size-4-1);
   min-height: 2.6em;
-  row-gap: 0;
 }
 
 .rss-reader__relevance-cell {
