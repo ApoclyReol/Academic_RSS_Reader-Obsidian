@@ -25,8 +25,8 @@ database applies only v5. The existing protection backup and rollback process
 remains in effect.
 
 > [!IMPORTANT]
-> Requires desktop Obsidian 1.13.0 or later with Node.js 22.16+ and
-> `node:sqlite`.
+> Requires desktop Obsidian 1.13.0 or later. If the bundled runtime is
+> incompatible, update Obsidian and try again.
 
 Install only `main.js`, `manifest.json`, and `styles.css` from the GitHub
 Release.

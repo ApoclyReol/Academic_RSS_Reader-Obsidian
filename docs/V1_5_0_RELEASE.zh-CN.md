@@ -21,7 +21,7 @@ schema 5 增加可空的 `items.image_url` 字段，不下载或回填旧文献�
 到 v4，再升级到 v5；v4 数据库只执行 v5。现有保护备份和失败回滚机制保持不变。
 
 > [!IMPORTANT]
-> 仅支持 Obsidian 1.13.0 或更高版本的桌面端，内置运行时还需提供 Node.js 22.16+ 和
-> `node:sqlite`。
+> 需要 Obsidian 1.13.0 或更高版本的桌面端。若内置运行环境不兼容，插件会提示升级
+> Obsidian。
 
 只安装 GitHub Release 中的 `main.js`、`manifest.json` 和 `styles.css`。
