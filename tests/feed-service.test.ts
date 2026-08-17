@@ -60,6 +60,154 @@ describe("feed service lifecycle", () => {
     expect(hooks.onFeedsUpdated).toHaveBeenCalledOnce();
   });
 
+  it("stores an RSS image without requesting the article page", async () => {
+    const { repository } = await createRepository();
+    vi.mocked(requestUrl).mockResolvedValue({
+      status: 200,
+      text: `<rss version="2.0"><channel><title>Feed</title><item>
+        <title>Image paper</title>
+        <link>https://example.com/article</link>
+        <description><![CDATA[<p>Abstract</p><img src="https://cdn.example.com/figure.png"/>]]></description>
+      </item></channel></rss>`,
+      headers: {},
+      json: {},
+    } as never);
+    const service = new FeedService(
+      repository,
+      () => DEFAULT_SETTINGS,
+      createHooks(),
+      timerWindow,
+    );
+
+    const [result] = await service.updateFeeds();
+
+    expect(result?.error).toBeNull();
+    expect(requestUrl).toHaveBeenCalledOnce();
+    expect(repository.listItems({ status: "unread" })[0]?.imageUrl).toBe(
+      "https://cdn.example.com/figure.png",
+    );
+  });
+
+  it("imports only OPML feed URLs and preserves outline names", async () => {
+    const { repository } = await createRepository();
+    const service = new FeedService(
+      repository,
+      () => DEFAULT_SETTINGS,
+      createHooks(),
+      timerWindow,
+    );
+
+    const candidates = service.parseImportText(
+      `<opml version="2.0"><body>
+        <outline text="Publisher">
+          <outline type="rss" text="Journal A"
+            xmlUrl="https://example.com/a?one=1&amp;two=2"
+            htmlUrl="https://example.com/journal/a" />
+          <outline type="rss" text="Journal B"
+            xmlUrl="https://example.com/b"
+            htmlUrl="https://example.com/journal/b" />
+        </outline>
+      </body></opml>`,
+    );
+
+    expect(candidates).toEqual([
+      {
+        name: "Journal A",
+        journalName: "Journal A",
+        url: "https://example.com/a?one=1&two=2",
+        enabled: true,
+      },
+      {
+        name: "Journal B",
+        journalName: "Journal B",
+        url: "https://example.com/b",
+        enabled: true,
+      },
+    ]);
+  });
+
+  it("repairs malformed names when the corrected OPML is imported again", async () => {
+    const { repository } = await createRepository();
+    await repository.updateFeed(1, {
+      name: 'xmlUrl=""',
+      journalName: 'xmlUrl=""',
+      url: "https://example.com/feed",
+      enabled: false,
+    });
+    const service = new FeedService(
+      repository,
+      () => DEFAULT_SETTINGS,
+      createHooks(),
+      timerWindow,
+    );
+
+    const result = await service.importFeeds([{
+      name: "Correct journal",
+      url: "https://example.com/feed",
+      enabled: true,
+    }]);
+
+    expect(result).toEqual({
+      added: 0,
+      repaired: 1,
+      skipped: 0,
+      errors: [],
+    });
+    expect(repository.getFeed(1)).toMatchObject({
+      name: "Correct journal",
+      journalName: "Correct journal",
+      enabled: false,
+    });
+  });
+
+  it("fully refreshes and repairs malformed feed metadata instead of accepting a 304", async () => {
+    const { repository } = await createRepository();
+    await repository.updateFeed(1, {
+      name: 'xmlUrl=""',
+      journalName: 'xmlUrl=""',
+      url: "https://example.com/feed",
+      enabled: true,
+    });
+    await repository.updateFeedCheck(1, null, {
+      success: true,
+      etag: "stale-etag",
+      lastModified: "Sat, 01 Aug 2026 00:00:00 GMT",
+    });
+    vi.mocked(requestUrl).mockResolvedValue({
+      status: 200,
+      text: `<rss version="2.0"><channel>
+        <title>Recovered journal</title>
+        <item><title>Recovered paper</title>
+          <description>Source: Article journal Author(s): Alice</description>
+        </item>
+      </channel></rss>`,
+      headers: {},
+      json: {},
+    } as never);
+    const service = new FeedService(
+      repository,
+      () => DEFAULT_SETTINGS,
+      createHooks(),
+      timerWindow,
+    );
+
+    await service.updateFeeds();
+
+    const request = vi.mocked(requestUrl).mock.calls[0]?.[0] as {
+      headers?: Record<string, string>;
+    };
+    expect(request.headers).not.toHaveProperty("If-None-Match");
+    expect(request.headers).not.toHaveProperty("If-Modified-Since");
+    expect(repository.getFeed(1)).toMatchObject({
+      name: "Recovered journal",
+      journalName: "Recovered journal",
+    });
+    expect(repository.listItems({ status: "unread" })[0]).toMatchObject({
+      authors: "Alice",
+      journal: "Article journal",
+    });
+  });
+
   it("does not write or refresh after cancellation", async () => {
     const { repository } = await createRepository();
     let resolveRequest!: (response: unknown) => void;

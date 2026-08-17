@@ -1,6 +1,6 @@
 # 数据库设计
 
-本文描述 Academic RSS Reader v1.4.1 的有效 schema 4。schema 事实源为
+本文描述 Academic RSS Reader v1.5.0 的有效 schema 5。schema 事实源为
 `src/database/schema.ts`，业务 SQL 事实源为 `src/repositories/rss-repository.ts`。
 
 ## 存储位置与运行参数
@@ -43,6 +43,7 @@ erDiagram
       TEXT stable_guid UK
       TEXT title_norm
       TEXT article_journal
+      TEXT image_url
       TEXT item_status
     }
     item_feeds {
@@ -93,6 +94,10 @@ erDiagram
 | 健康状态 | `last_error`, `consecutive_failures`, `health_status`, `next_auto_update_at` |
 
 `name` 是订阅名称；`journal_name` 是可编辑的默认期刊名。修改订阅不会批量修改文章。
+订阅管理界面只显示并编辑一个期刊字段，保存时同步写入 `name` 与 `journal_name`；保留两个
+数据库列仅用于兼容现有 schema、OPML 和更新服务。
+读取历史异常 OPML 数据时保留这两个原始字段供更新服务识别和自动修复；UI 的派生显示值
+优先采用该订阅已有文章中出现最多的 `article_journal`，无法推断时回退到订阅 URL 域名。
 
 ### `items`
 
@@ -101,7 +106,7 @@ erDiagram
 | 字段组 | 字段 |
 |---|---|
 | 身份 | `id`, `stable_guid`（唯一）, `title_norm`, `doi`, `link` |
-| 原始内容 | `title`, `authors`, `article_journal`, `year`, `pub_date`, `summary` |
+| 原始内容 | `title`, `authors`, `article_journal`, `year`, `pub_date`, `summary`, `image_url` |
 | 状态 | `item_status` |
 | 观察时间 | `first_seen_at`, `last_seen_at` |
 
@@ -111,8 +116,11 @@ erDiagram
 展示期刊在查询时派生：
 
 1. 文章级 `article_journal`；
-2. 所有关联订阅的 `feeds.journal_name`；
-3. 去重后按文章级优先、名称排序，以 ` / ` 拼接。
+2. 若文章级值为空，使用按 `item_feeds.first_seen_at`、`feeds.id` 排序后的第一个非空
+   `feeds.journal_name`。
+
+卡片始终只显示一个期刊名。订阅更新提供新的非空文章级期刊时会刷新
+`article_journal`；空值不会覆盖已有文章级期刊。
 
 ### `item_feeds`
 
@@ -227,7 +235,7 @@ DOI
 
 ## Schema 迁移
 
-新数据库先执行版本 1 基线，再按 `SCHEMA_MIGRATIONS` 依次应用 2、3、4。已有数据库只执行
+新数据库先执行版本 1 基线，再按 `SCHEMA_MIGRATIONS` 依次应用 2、3、4、5。已有数据库只执行
 尚未登记的版本。
 
 每个 migration：
@@ -245,7 +253,13 @@ schema 4 的主要变化：
 - 清空旧文章期刊值，由订阅关联重新派生展示；
 - 增加 DOI、link 和身份组合索引。
 
-升级前通过 `VACUUM INTO` 在 `backups/` 创建 `before-schema4-*` 快照。迁移失败时恢复该
+schema 5 的主要变化：
+
+- 增加可空的 `items.image_url`，保存 RSS item 提供的 HTTP(S) 摘要图 URL；不保存图片二进制。
+- 旧文章不回填图片，后续订阅更新发现图片时才更新对应文献。
+- 无图值写入 `NULL`；订阅更新会把同一订阅历史遗留的空字符串规范化为 `NULL`。
+
+升级前通过 `VACUUM INTO` 在 `backups/` 创建对应版本的 `before-schema*` 快照。迁移失败时恢复该
 快照。已发布 migration 不得修改、删除或重排；下一次变更应提高 `SCHEMA_VERSION` 并追加
 新 migration。
 

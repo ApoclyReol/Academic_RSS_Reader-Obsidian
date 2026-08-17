@@ -9,7 +9,7 @@ Academic RSS Reader is a desktop Obsidian plugin for the first pass of academic 
 The plugin focuses on the step between “new papers arrived” and “I know what deserves a closer read”. It is designed to reduce repetitive triage, not to replace a reference manager or a full-text database.
 
 > [!IMPORTANT]
-> Current recommended version: **1.4.1**. This version requires Obsidian **1.13.0 or later** and is desktop-only. Its bundled runtime must also provide Node.js **22.16 or later**, `node:sqlite` `DatabaseSync`, and the SQLite Backup API. Update Obsidian before installing or updating when possible.
+> Current recommended version: **1.5.0**. This version requires Obsidian **1.13.0 or later** and is desktop-only. Its bundled runtime must also provide Node.js **22.16 or later**, `node:sqlite` `DatabaseSync`, and the SQLite Backup API. Update Obsidian before installing or updating when possible.
 
 ## Why use Academic RSS Reader
 
@@ -70,7 +70,7 @@ Academic RSS Reader is a good fit if you:
 
 - Train a local TypeScript TF-IDF and logistic-regression model from your reading states.
 - Use interested and archived papers as positive examples, and hidden and expired papers as negative examples.
-- Show high-relevance, pending, and low-relevance tiers below a fixed two-line title area, using a compact status badge and two aligned lines for the strongest positive and negative keyword evidence.
+- Show high-relevance, pending, and low-relevance tiers below a fixed three-line title area, using a compact status badge and two aligned lines for the strongest positive and negative keyword evidence.
 - Use the same TF-IDF feature scale for training and formal scoring; cancelled background training cannot write stale results.
 - Manage the learned keyword list by disabling or re-enabling individual terms.
 - Refresh recommendations automatically after feed updates, while reusing an unchanged model and scoring only new or changed unread papers when possible.
@@ -87,7 +87,9 @@ The local model needs at least two positive and two negative training papers. Un
 
 ### Data model and safety boundaries
 
-- Each feed has an editable default journal name. A journal explicitly supplied by RSS takes priority, and journal names from multiple associated feeds are shown once each.
+- Each card shows one journal name: an article-level value refreshed from RSS takes priority, with the earliest associated feed default used only as a fallback.
+- Paper cards use a fixed 13rem height with increased row spacing. Three title lines are always reserved, with longer titles clipped after the third line without inserting a misleading mid-title ellipsis; actions immediately follow the relevance block.
+- Title fragments delimited by `$...$`, `$$...$$`, `\(...\)`, or `\[...\]` use Obsidian's native MathJax renderer; invalid fragments fall back to their original text.
 - Article links accept only `http:` and `https:`. RSS/XML rejects `DOCTYPE`, invalid root structures, and responses over 10 MiB; only known tracking parameters are removed, while business query parameters are preserved.
 - LLM endpoints must use HTTPS, or HTTP on `localhost`, `127.0.0.1`, or `::1`. Requests have a 30-second timeout and bounded retries.
 
@@ -149,6 +151,7 @@ The plugin does not create or open a database during startup. Database creation 
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [Security and privacy](SECURITY.md)
 - [Changelog](CHANGELOG.md)
+- [v1.5.0 release notes](docs/V1_5_0_RELEASE.md)
 - [v1.4.1 release notes](docs/V1_4_1_RELEASE.md)
 - [v1.4.0 release notes](docs/V1_4_0_RELEASE.md)
 - [v1.3.0 release notes](docs/V1_3_0_RELEASE.md)

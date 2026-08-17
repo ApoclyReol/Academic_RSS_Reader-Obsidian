@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { t } from "../src/i18n";
 import {
   canonicalizeLink,
+  canonicalizeImageUrl,
   findDoi,
   MAX_FEED_XML_BYTES,
   parseFeed,
@@ -47,6 +48,134 @@ describe("RSS parser", () => {
     );
     expect(result.items[0]?.link).toBe("https://example.org/a?id=1");
     expect(result.items[0]?.authors).toBe("Alice");
+  });
+
+  it("extracts labeled journal and authors without changing the plain-text summary", () => {
+    const result = parseFeed(
+      `<rss version="2.0"><channel>
+        <title>ScienceDirect Publication: International Journal of Multiphase Flow</title>
+        <item>
+          <title>Multiphase paper</title>
+          <link>https://www.sciencedirect.com/science/article/pii/S123</link>
+          <description><![CDATA[
+            <p>Publication date: September 2026</p>
+            <p><b>Source:</b> International Journal of Multiphase Flow, Volume 203</p>
+            <p>Author(s): Alice Example, Bob Example</p>
+          ]]></description>
+        </item>
+      </channel></rss>`,
+      "Fallback",
+      "Configured fallback",
+    );
+
+    expect(result.items[0]).toMatchObject({
+      articleJournal: "International Journal of Multiphase Flow",
+      authors: "Alice Example, Bob Example",
+      journal: "International Journal of Multiphase Flow",
+      summary:
+        "Publication date: September 2026 Source: International Journal of Multiphase Flow, Volume 203 Author(s): Alice Example, Bob Example",
+    });
+  });
+
+  it("extracts item images in priority order and keeps summaries as text", () => {
+    const result = parseFeed(
+      `<rss version="2.0"
+        xmlns:media="http://search.yahoo.com/mrss/"
+        xmlns:content="http://purl.org/rss/1.0/modules/content/">
+        <channel>
+          <title>Image sources</title>
+          <image><url>https://example.com/channel-logo.png</url></image>
+          <item>
+            <title>Media content</title>
+            <media:content url="https://example.com/media.png" type="image/png"/>
+            <media:thumbnail url="https://example.com/thumbnail.png"/>
+            <enclosure url="https://example.com/enclosure.jpg" type="image/jpeg"/>
+            <description><![CDATA[<p>Abstract text</p><img src="https://example.com/html.png"/>]]></description>
+          </item>
+          <item>
+            <title>Media thumbnail</title>
+            <media:thumbnail url="//cdn.example.com/thumbnail.png"/>
+            <description>Thumbnail abstract</description>
+          </item>
+          <item>
+            <title>RSS enclosure</title>
+            <enclosure url="https://example.com/enclosure.jpg" type="image/jpeg"/>
+            <description>Enclosure abstract</description>
+          </item>
+          <item>
+            <title>HTML image</title>
+            <description>HTML abstract</description>
+            <content:encoded><![CDATA[<p>HTML abstract</p><img src="https://example.com/figure.png" width="200" height="100"/>]]></content:encoded>
+          </item>
+          <item>
+            <title>No item image</title>
+            <description>Only text</description>
+          </item>
+        </channel>
+      </rss>`,
+      "Fallback",
+    );
+
+    expect(result.items.map((item) => item.imageUrl)).toEqual([
+      "https://example.com/media.png",
+      "https://cdn.example.com/thumbnail.png",
+      "https://example.com/enclosure.jpg",
+      "https://example.com/figure.png",
+      undefined,
+    ]);
+    expect(result.items[0]?.summary).toBe("Abstract text");
+    expect(result.items[4]?.imageUrl).toBeUndefined();
+  });
+
+  it("extracts Atom enclosure links after RSS enclosures", () => {
+    const result = parseFeed(
+      `<feed xmlns="http://www.w3.org/2005/Atom">
+        <title>Atom images</title>
+        <entry>
+          <title>Atom paper</title>
+          <link rel="alternate" href="https://example.com/paper"/>
+          <link rel="enclosure" href="https://example.com/graphical-abstract.webp" type="image/webp"/>
+          <summary>Atom abstract</summary>
+        </entry>
+      </feed>`,
+      "Fallback",
+    );
+
+    expect(result.items[0]).toMatchObject({
+      link: "https://example.com/paper",
+      imageUrl: "https://example.com/graphical-abstract.webp",
+      summary: "Atom abstract",
+    });
+  });
+
+  it("rejects unsafe and decorative image fields and falls through", () => {
+    const result = parseFeed(
+      `<rss version="2.0"
+        xmlns:media="http://search.yahoo.com/mrss/"
+        xmlns:content="http://purl.org/rss/1.0/modules/content/">
+        <channel><title>Invalid images</title><item>
+          <title>Safe fallback</title>
+          <media:content url="data:image/png;base64,abc" type="image/png"/>
+          <media:content url="https://example.com/logo.png" type="image/png"/>
+          <media:thumbnail url="https://example.com/tracking-pixel.png"/>
+          <enclosure url="https://example.com/video.png" type="video/mp4"/>
+          <description><![CDATA[
+            <img src="https://example.com/logo.png" alt="journal logo"/>
+            <img data-src="https://example.com/lazy-placeholder.png" width="200" height="100"/>
+            <img src="/relative/figure.png" width="200" height="100"/>
+            <img src="https://example.com/paper-figure.png" width="200" height="100"/>
+          ]]></description>
+        </item></channel></rss>`,
+      "Fallback",
+    );
+
+    expect(result.items[0]?.imageUrl).toBe(
+      "https://example.com/paper-figure.png",
+    );
+    expect(canonicalizeImageUrl("javascript:alert(1)")).toBe("");
+    expect(canonicalizeImageUrl("/relative/image.png")).toBe("");
+    expect(canonicalizeImageUrl("https://example.com/a.png?x=1&utm_source=rss"))
+      .toBe("https://example.com/a.png?x=1&utm_source=rss");
   });
 
   it("parses RSS 1.0 RDF feeds used by Nature journals", () => {

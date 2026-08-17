@@ -286,10 +286,10 @@ export class FeedService {
   }
 
   parseImportText(text: string): FeedInput[] {
-    const decoded = decodeXmlEntities(text);
     const candidates: FeedInput[] = [];
+    const hasOutlines = /<outline\b/i.test(text);
     const outlinePattern = /<outline\b[^>]*>/gi;
-    for (const match of decoded.matchAll(outlinePattern)) {
+    for (const match of text.matchAll(outlinePattern)) {
       const tag = match[0];
       const url = attribute(tag, "xmlUrl") || attribute(tag, "url");
       if (!url) {
@@ -299,20 +299,25 @@ export class FeedService {
         attribute(tag, "text") || attribute(tag, "title") || url;
       candidates.push({ name, url, enabled: true });
     }
-    for (const line of decoded.split(/\r?\n/)) {
-      for (const rawUrl of line.match(/https?:\/\/[^\s"'<>]+/g) ?? []) {
-        const url = rawUrl.replace(/[",;)\]}\\]+$/, "");
-        const name =
-          line.replace(rawUrl, "").replace(/^[\s,;:：|—-]+|[\s,;]+$/g, "") ||
-          url;
-        candidates.push({ name, url, enabled: true });
+    if (!hasOutlines) {
+      const decoded = decodeXmlEntities(text);
+      for (const line of decoded.split(/\r?\n/)) {
+        for (const rawUrl of line.match(/https?:\/\/[^\s"'<>]+/g) ?? []) {
+          const url = rawUrl.replace(/[",;)\]}\\]+$/, "");
+          const name =
+            line.replace(rawUrl, "").replace(/^[\s,;:：|—-]+|[\s,;]+$/g, "") ||
+            url;
+          candidates.push({ name, url, enabled: true });
+        }
       }
     }
     const unique = new Map<string, FeedInput>();
     for (const candidate of candidates) {
       try {
         const valid = this.validateFeed(candidate);
-        unique.set(valid.url, valid);
+        if (!unique.has(valid.url)) {
+          unique.set(valid.url, valid);
+        }
       } catch {
         // Invalid candidates are omitted from preview.
       }
@@ -322,21 +327,44 @@ export class FeedService {
 
   async importFeeds(
     candidates: FeedInput[],
-  ): Promise<{ added: number; skipped: number; errors: string[] }> {
-    const existing = new Set(
-      this.repository.listFeeds(true).map((feed) => feed.url),
+  ): Promise<{
+    added: number;
+    repaired: number;
+    skipped: number;
+    errors: string[];
+  }> {
+    const existing = new Map(
+      this.repository.listFeeds(true).map((feed) => [feed.url, feed]),
     );
     let added = 0;
+    let repaired = 0;
     let skipped = 0;
     const errors: string[] = [];
     for (const candidate of candidates) {
-      if (existing.has(candidate.url)) {
-        skipped += 1;
-        continue;
-      }
       try {
+        const current = existing.get(candidate.url);
+        if (current) {
+          if (
+            isMalformedImportedName(current.name) ||
+            isMalformedImportedName(current.journalName)
+          ) {
+            const valid = this.validateFeed(candidate);
+            await this.repository.updateFeed(current.id, {
+              ...valid,
+              enabled: current.enabled,
+            });
+            existing.set(candidate.url, {
+              ...current,
+              name: valid.name,
+              journalName: valid.journalName ?? valid.name,
+            });
+            repaired += 1;
+          } else {
+            skipped += 1;
+          }
+          continue;
+        }
         await this.addFeed(candidate);
-        existing.add(candidate.url);
         added += 1;
       } catch (error) {
         errors.push(
@@ -344,7 +372,7 @@ export class FeedService {
         );
       }
     }
-    return { added, skipped, errors };
+    return { added, repaired, skipped, errors };
   }
 
   private async updateOne(
@@ -382,6 +410,27 @@ export class FeedService {
         feed.id,
         parsed.items,
       );
+      if (generation !== this.updateGeneration) {
+        return this.emptyResult(feed.id, feed.name, null, true);
+      }
+      if (
+        parsed.title.trim() &&
+        (
+          isMalformedImportedName(feed.name) ||
+          isMalformedImportedName(feed.journalName)
+        )
+      ) {
+        await this.repository.updateFeed(feed.id, {
+          name: isMalformedImportedName(feed.name)
+            ? parsed.title.trim()
+            : feed.name,
+          journalName: isMalformedImportedName(feed.journalName)
+            ? parsed.title.trim()
+            : feed.journalName,
+          url: feed.url,
+          enabled: feed.enabled,
+        });
+      }
       if (generation !== this.updateGeneration) {
         return this.emptyResult(feed.id, feed.name, null, true);
       }
@@ -449,12 +498,15 @@ export class FeedService {
         const headers: Record<string, string> = {
           Accept:
             "application/rss+xml, application/atom+xml, application/xml, text/xml, */*",
-          "User-Agent": "Academic-RSS-Reader/1.4.1",
+          "User-Agent": "Academic-RSS-Reader/1.5.0",
         };
-        if (feed.etag) {
+        const hasMalformedMetadata =
+          isMalformedImportedName(feed.name) ||
+          isMalformedImportedName(feed.journalName);
+        if (feed.etag && !hasMalformedMetadata) {
           headers["If-None-Match"] = feed.etag;
         }
-        if (feed.lastModified) {
+        if (feed.lastModified && !hasMalformedMetadata) {
           headers["If-Modified-Since"] = feed.lastModified;
         }
         const response = await withTimeout(requestUrl({
@@ -605,7 +657,7 @@ function attribute(tag: string, name: string): string {
   const match = tag.match(
     new RegExp(`${name}\\s*=\\s*["']([^"']+)["']`, "i"),
   );
-  return match?.[1]?.trim() ?? "";
+  return decodeXmlEntities(match?.[1] ?? "").trim();
 }
 
 function decodeXmlEntities(value: string): string {
@@ -613,6 +665,10 @@ function decodeXmlEntities(value: string): string {
     .replace(/&amp;/g, "&")
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'");
+}
+
+function isMalformedImportedName(value: string): boolean {
+  return /^(?:xmlUrl|htmlUrl)\s*=/i.test(value.trim());
 }
 
 function delay(

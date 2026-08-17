@@ -46,7 +46,7 @@ src/
 - 数据目录先按 Vault 相对路径校验，再通过 `DataAdapter.getFullPath()` 解析；原生文件 API 只接触 SQLite 主文件、WAL/SHM sidecar、incoming/rollback/tmp/previous 文件和 `backups/` 中的数据库备份，其他 Vault 文件继续使用 `DataAdapter`。
 - `RssDatabase` 使用 `DatabaseSync`、WAL、`foreign_keys=ON`、`busy_timeout=5000`、`BEGIN IMMEDIATE` 和单一写队列。关闭前必须按 service stop/drain → database drain → database close 的顺序执行。
 - 备份使用 SQLite Backup API；恢复使用 incoming/rollback 临时文件和保护快照；替换失败时恢复原库并保留可诊断候选。
-- v3 数据库载入时原地升级到 schema 4。升级前使用 `VACUUM INTO` 在 `backups/` 创建保护备份；迁移失败时回滚到原文件。
+- v3 数据库载入时原地升级到 schema 5。升级前使用 `VACUUM INTO` 在 `backups/` 创建保护备份；迁移失败时回滚到原文件。
 - 每批订阅更新完成后自动刷新推荐；训练数据 hash 未变化时复用模型并仅增量评分。用户仍可通过按钮主动重建。
 - 标题翻译只由阅读页开关触发；译文变化局部更新卡片，不重绘整个列表。
 - 插件加载阶段不创建数据库；用户选择 Vault 内数据目录并创建或载入后，才构造 Repository 和业务服务。
@@ -99,7 +99,7 @@ publisher:{sha256(出版商稳定 ID)前24位}
 cnki-local:{sha256(规范化标题|年份|派生期刊名)前24位}
 ```
 
-旧 GUID、DOI、出版商稳定 ID、规范化 URL 和标题组合共同参与兼容查找。命中旧记录后保留既有数据库 ID、GUID、阅读状态和更完整的字段，不以新抓取的空值覆盖旧值。ScienceDirect 从 `/pii/<PII>` 提取稳定身份，`dgcid` 作为跟踪参数移除；双方都有 PII 且不同，则禁止通过标题、年份、作者或期刊弱匹配合并。`feeds.journal_name` 是订阅默认期刊名；`items.article_journal` 只保存 RSS 明确提供的文章级覆盖。展示时文章级期刊优先，然后拼接所有关联订阅的去重默认期刊名。修改订阅不会批量改写文章级字段。
+旧 GUID、DOI、出版商稳定 ID、规范化 URL 和标题组合共同参与兼容查找。命中旧记录后保留既有数据库 ID、GUID、阅读状态和更完整的字段，不以新抓取的空值覆盖旧值。ScienceDirect 从 `/pii/<PII>` 提取稳定身份，`dgcid` 作为跟踪参数移除；双方都有 PII 且不同，则禁止通过标题、年份、作者或期刊弱匹配合并。`feeds.journal_name` 是订阅默认期刊名；`items.article_journal` 只保存 RSS 明确提供或从 item 摘要标签提取的文章级覆盖。卡片只显示一个期刊名：文章级期刊优先，缺失时选择最早关联订阅的默认期刊。非空文章级期刊可随订阅更新刷新，修改订阅不会批量改写文章级字段。
 
 ## 数据库
 

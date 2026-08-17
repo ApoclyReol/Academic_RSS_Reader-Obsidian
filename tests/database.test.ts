@@ -44,7 +44,7 @@ describe("database and repository", () => {
     const versions = database.query<{ version: number }>(
       "SELECT version FROM schema_migrations ORDER BY version",
     );
-    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4]);
+    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5]);
     const feedColumns = database.query<{ name: string }>(
       "PRAGMA table_info(feeds)",
     );
@@ -55,6 +55,9 @@ describe("database and repository", () => {
     expect(modelColumns.map((row) => row.name)).toContain(
       "training_hash",
     );
+    expect(database.query<{ name: string }>(
+      "PRAGMA table_info(items)",
+    ).map((row) => row.name)).toContain("image_url");
   });
 
   it("blocks hosts without DatabaseSync or the SQLite Backup API", () => {
@@ -98,11 +101,12 @@ describe("database and repository", () => {
     const migratedRepository = new RssRepository(migrated);
     expect(migrated.query<{ version: number }>(
       "SELECT MAX(version) AS version FROM schema_migrations",
-    )[0]?.version).toBe(4);
+    )[0]?.version).toBe(5);
     expect(migratedRepository.getFeed(feedId)?.journalName).toBe("Legacy feed");
     expect(migratedRepository.getItem(itemId, "zh-CN")).toMatchObject({
       itemStatus: "interested",
       journal: "Legacy feed",
+      imageUrl: null,
       translatedTitle: "旧文章",
     });
     expect(migrated.get<{ value: string }>(
@@ -110,7 +114,40 @@ describe("database and repository", () => {
     )).toBeNull();
     expect(migrated.query("PRAGMA foreign_key_check")).toHaveLength(0);
     const backups = await legacyAdapter.list("Legacy/backups");
-    expect(backups.files.some((path) => path.includes("before-schema4-"))).toBe(true);
+    expect(backups.files.some((path) => path.includes("before-schema5-"))).toBe(true);
+    migrated.close();
+    legacyAdapter.dispose();
+  });
+
+  it("adds image_url when upgrading a schema 4 database", async () => {
+    const legacyAdapter = new MemoryAdapter();
+    await createLegacyDatabase(legacyAdapter, "Legacy4/rss-reader.sqlite3", 4);
+    const legacyPath = legacyAdapter.getFullPath("Legacy4/rss-reader.sqlite3");
+    const legacy = new DatabaseSync(legacyPath);
+    legacy.prepare(
+      "INSERT INTO feeds(name,url,enabled) VALUES ('Legacy 4','https://example.com/legacy4',1)",
+    ).run();
+    legacy.prepare(
+      `INSERT INTO items(
+        stable_guid,title,title_norm,article_journal,year,link
+      ) VALUES ('legacy4-guid','Legacy 4 paper','legacy4 paper','Legacy 4','2026','https://example.com/legacy4-paper')`,
+    ).run();
+    legacy.close();
+
+    const migrated = new RssDatabase(
+      legacyAdapter,
+      "Legacy4/rss-reader.sqlite3",
+    );
+    await migrated.initialize({ createIfMissing: false });
+    const migratedRepository = new RssRepository(migrated);
+    expect(migrated.query<{ version: number }>(
+      "SELECT MAX(version) AS version FROM schema_migrations",
+    )[0]?.version).toBe(5);
+    expect(migratedRepository.listItems({ status: "unread" })[0]?.imageUrl)
+      .toBeNull();
+    expect((await legacyAdapter.list("Legacy4/backups")).files.some(
+      (path) => path.includes("before-schema5-"),
+    )).toBe(true);
     migrated.close();
     legacyAdapter.dispose();
   });
@@ -245,12 +282,12 @@ describe("database and repository", () => {
     ).toBe(false);
     restored.close();
     const backups = await rollbackAdapter.list("Rollback/backups");
-    expect(backups.files.some((path) => path.includes("before-schema4-"))).toBe(true);
+    expect(backups.files.some((path) => path.includes("before-schema5-"))).toBe(true);
     candidate.close();
     rollbackAdapter.dispose();
   });
 
-  it("shows article journal first and deduplicates all feed defaults", async () => {
+  it("shows one refreshable article journal before one feed fallback", async () => {
     const firstFeed = await repository.addFeed({
       name: "Subscription A",
       journalName: "Journal A",
@@ -292,7 +329,7 @@ describe("database and repository", () => {
     const itemId = repository.listItems({ status: "unread" })[0]?.id;
     expect(itemId).toBeDefined();
     expect(repository.getItem(itemId!, "zh-CN")?.journal).toBe(
-      "Article Journal / Journal A / Journal B",
+      "Article Journal",
     );
 
     await repository.updateFeed(firstFeed, {
@@ -302,8 +339,89 @@ describe("database and repository", () => {
       enabled: true,
     });
     expect(repository.getItem(itemId!, "zh-CN")?.journal).toBe(
-      "Article Journal / Journal B / Journal Renamed",
+      "Article Journal",
     );
+
+    await repository.upsertParsedItems(firstFeed, [{
+      stableGuid: "article-journal-guid",
+      title: "Article journal paper",
+      titleNorm: "article journal paper",
+      authors: "Alice",
+      journal: "Article Journal Updated",
+      articleJournal: "Article Journal Updated",
+      year: "2026",
+      doi: "",
+      link: "https://example.com/paper",
+      pubDate: "",
+      summary: "",
+    }]);
+    expect(repository.getItem(itemId!, "zh-CN")?.journal).toBe(
+      "Article Journal Updated",
+    );
+
+    const fallbackStored = await repository.upsertParsedItems(firstFeed, [{
+      stableGuid: "feed-fallback-guid",
+      title: "Feed fallback paper",
+      titleNorm: "feed fallback paper",
+      authors: "Bob",
+      journal: "Journal Renamed",
+      year: "2026",
+      doi: "",
+      link: "https://example.com/fallback",
+      pubDate: "",
+      summary: "",
+    }]);
+    await repository.upsertParsedItems(secondFeed, [{
+      stableGuid: "feed-fallback-guid",
+      title: "Feed fallback paper",
+      titleNorm: "feed fallback paper",
+      authors: "Bob",
+      journal: "Journal B",
+      year: "2026",
+      doi: "",
+      link: "https://example.com/fallback",
+      pubDate: "",
+      summary: "",
+    }]);
+    expect(repository.getItem(fallbackStored.insertedIds[0]!)?.journal).toBe(
+      "Journal Renamed",
+    );
+  });
+
+  it("hides malformed legacy OPML metadata and infers the journal from items", async () => {
+    const feedId = await repository.addFeed({
+      name: 'xmlUrl=""',
+      journalName: 'htmlUrl="" />',
+      url: "https://feeds.example.com/journal.xml",
+      enabled: true,
+    });
+    expect(repository.getFeed(feedId)).toMatchObject({
+      name: 'xmlUrl=""',
+      journalName: 'htmlUrl="" />',
+      displayJournalName: "feeds.example.com",
+    });
+
+    await repository.upsertParsedItems(feedId, [{
+      stableGuid: "inferred-feed-journal-guid",
+      title: "Paper with article journal",
+      titleNorm: "paper with article journal",
+      authors: "Alice",
+      journal: "Recovered Journal",
+      articleJournal: "Recovered Journal",
+      year: "2026",
+      doi: "",
+      link: "https://example.com/recovered-paper",
+      pubDate: "",
+      summary: "",
+    }]);
+
+    expect(repository.getFeed(feedId)).toMatchObject({
+      displayJournalName: "Recovered Journal",
+    });
+    expect(repository.listFeeds()[0]).toMatchObject({
+      displayJournalName: "Recovered Journal",
+    });
+    expect(repository.listFeedStats()[0]?.name).toBe("Recovered Journal");
   });
 
   it("preserves disabled keywords across model replacement", async () => {
@@ -386,10 +504,14 @@ describe("database and repository", () => {
         link: "https://example.com/paper",
         pubDate: "2024-01-01T00:00:00.000Z",
         summary: "Abstract",
+        imageUrl: "https://cdn.example.com/abstract.png",
       },
     ]);
     expect(stored.insertedIds).toHaveLength(1);
     expect(repository.countByStatus().unread).toBe(1);
+    expect(repository.getItem(stored.insertedIds[0]!)?.imageUrl).toBe(
+      "https://cdn.example.com/abstract.png",
+    );
 
     await repository.setItemStatus(stored.insertedIds, "hidden");
     expect(repository.countByStatus().hidden).toBe(1);
@@ -416,10 +538,55 @@ describe("database and repository", () => {
       summary: "",
     };
     await repository.upsertParsedItems(feedId, [item]);
+    await database.write((db) => {
+      db.run(
+        "UPDATE items SET image_url='' WHERE stable_guid='same-guid'",
+      );
+    });
     const duplicate = await repository.upsertParsedItems(feedId, [item]);
     expect(duplicate.insertedIds).toHaveLength(0);
     expect(duplicate.duplicateHits).toBe(1);
     expect(repository.countItems()).toBe(1);
+    expect(database.get<{ image_url: string | null }>(
+      "SELECT image_url FROM items WHERE stable_guid='same-guid'",
+    )?.image_url).toBeNull();
+  });
+
+  it("updates a stored image when available and preserves it when absent", async () => {
+    const feedId = await repository.addFeed({
+      name: "Image journal",
+      url: "https://example.com/image-feed",
+      enabled: true,
+    });
+    const item = {
+      stableGuid: "image-guid",
+      title: "Image paper",
+      titleNorm: "image paper",
+      authors: "Alice",
+      journal: "Image journal",
+      year: "2026",
+      doi: "",
+      link: "https://example.com/image-paper",
+      pubDate: "",
+      summary: "Abstract",
+      imageUrl: "https://example.com/first.png",
+    };
+    await repository.upsertParsedItems(feedId, [item]);
+    await repository.upsertParsedItems(feedId, [{
+      ...item,
+      imageUrl: undefined,
+    }]);
+    expect(repository.listItems({ status: "unread" })[0]?.imageUrl).toBe(
+      "https://example.com/first.png",
+    );
+
+    await repository.upsertParsedItems(feedId, [{
+      ...item,
+      imageUrl: "https://example.com/second.png",
+    }]);
+    expect(repository.listItems({ status: "unread" })[0]?.imageUrl).toBe(
+      "https://example.com/second.png",
+    );
   });
 
   it("exports and restores a database backup", async () => {
@@ -922,7 +1089,7 @@ class CorruptingCopyAdapter extends MemoryAdapter {
 async function createLegacyDatabase(
   adapter: MemoryAdapter,
   path: string,
-  version: 2 | 3,
+  version: 2 | 3 | 4,
 ): Promise<void> {
   const directory = path.split("/").slice(0, -1).join("/");
   await adapter.mkdir(directory);

@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 export interface SchemaMigration {
   version: number;
@@ -40,6 +40,12 @@ export const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
       "CREATE INDEX IF NOT EXISTS idx_items_link ON items(link)",
       "CREATE INDEX IF NOT EXISTS idx_items_identity_fallback ON items(title_norm, authors, year)",
       "CREATE INDEX IF NOT EXISTS idx_items_identity_fallback_journal ON items(title_norm, authors, year, article_journal)",
+    ],
+  },
+  {
+    version: 5,
+    statements: [
+      "ALTER TABLE items ADD COLUMN image_url TEXT",
     ],
   },
 ];

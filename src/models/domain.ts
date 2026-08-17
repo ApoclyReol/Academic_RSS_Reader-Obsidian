@@ -19,6 +19,7 @@ export interface Feed {
   id: number;
   name: string;
   journalName: string;
+  displayJournalName: string;
   url: string;
   enabled: boolean;
   createdAt: string;
@@ -54,6 +55,7 @@ export interface RssItem {
   link: string;
   pubDate: string;
   summary: string;
+  imageUrl: string | null;
   firstSeenAt: string;
   lastSeenAt: string;
   itemStatus: ItemStatus;
@@ -80,6 +82,7 @@ export interface ParsedItem {
   link: string;
   pubDate: string;
   summary: string;
+  imageUrl?: string;
 }
 
 export interface ItemQuery {

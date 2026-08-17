@@ -12,13 +12,15 @@
 建议按以下顺序阅读：
 
 1. [架构设计](ARCHITECTURE.md)：模块职责、依赖方向、生命周期和后台任务。
-2. [数据库设计](DATABASE.md)：schema 4、表关系、去重、迁移、备份和恢复。
+2. [数据库设计](DATABASE.md)：schema 5、表关系、去重、迁移、备份和恢复。
 3. [开发说明](DEVELOPMENT.md)：开发命令、实现约束、测试和发布流程。
 4. [Agent Guide](../AGENTS.md)：自动化维护时必须遵守的项目规则。
 
 ## 发布文档
 
 - [版本记录](../CHANGELOG.md)
+- [v1.5.0 中文发布说明](V1_5_0_RELEASE.zh-CN.md)
+- [v1.5.0 English release notes](V1_5_0_RELEASE.md)
 - [v1.4.1 中文发布说明](V1_4_1_RELEASE.zh-CN.md)
 - [v1.4.1 English release notes](V1_4_1_RELEASE.md)
 - [v1.4.0 中文发布说明](V1_4_0_RELEASE.zh-CN.md)

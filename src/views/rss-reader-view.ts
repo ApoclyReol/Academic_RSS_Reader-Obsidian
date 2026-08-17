@@ -6,6 +6,8 @@ import {
   Setting,
   ToggleComponent,
   WorkspaceLeaf,
+  finishRenderMath,
+  loadMathJax,
   setIcon,
 } from "obsidian";
 
@@ -24,6 +26,11 @@ import {
 import { statusLabel } from "./status-label";
 import { executeUiAction } from "./ui-action";
 import { recommendationExplanation } from "./recommendation-explanation";
+import { renderItemImage } from "./item-image";
+import {
+  renderMixedMathTitle,
+  titleContainsMath,
+} from "./mixed-math-title";
 
 type Page = "reader" | "feeds" | "analytics";
 
@@ -42,6 +49,10 @@ export class RssReaderView extends ItemView {
   private translationEnabled = false;
   private titleObserver: IntersectionObserver | null = null;
   private loadMoreObserver: IntersectionObserver | null = null;
+  private mathFlushScheduled = false;
+  private mathJaxLoading: Promise<void> | null = null;
+  private mathJaxReady = false;
+  private viewActive = false;
   private requestedTitleIds = new Set<string>();
   private readerItems: RssItem[] = [];
   private readerMatched = 0;
@@ -72,11 +83,13 @@ export class RssReaderView extends ItemView {
   }
 
   async onOpen(): Promise<void> {
+    this.viewActive = true;
     this.plugin.prepareDatabaseOnViewOpen();
     await this.refresh();
   }
 
   async onClose(): Promise<void> {
+    this.viewActive = false;
     this.titleObserver?.disconnect();
     this.loadMoreObserver?.disconnect();
   }
@@ -325,16 +338,24 @@ export class RssReaderView extends ItemView {
   private renderItemCard(container: HTMLElement, item: RssItem): void {
     const card = container.createDiv({ cls: "rss-reader__item" });
     card.dataset.itemId = String(item.id);
-    const titleContainer = card.createDiv({ cls: "rss-reader__item-title" });
+    const content = card.createDiv({
+      cls: "rss-reader__item-content",
+    });
+    const titleContainer = content.createDiv({
+      cls: "rss-reader__item-title",
+    });
     this.renderTitle(titleContainer, item);
     if (item.journal) {
-      card.createEl("p", {
+      content.createEl("p", {
         cls: "rss-reader__caption",
         text: item.journal,
       });
     }
-    this.renderKeywordRelevance(card, item);
-    const actions = card.createDiv({ cls: "rss-reader__item-actions" });
+    const footer = content.createDiv({
+      cls: "rss-reader__item-footer",
+    });
+    this.renderKeywordRelevance(footer, item);
+    const actions = footer.createDiv({ cls: "rss-reader__item-actions" });
     this.renderStatusActions(actions, item);
     if (item.link) {
       this.actionButton(actions, t("ui.open_original"), "external-link", () => {
@@ -343,6 +364,16 @@ export class RssReaderView extends ItemView {
         }
       });
     }
+    renderItemImage(
+      card,
+      item,
+      (target, type, callback) => {
+        this.registerDomEvent(target, type, callback);
+      },
+      () => {
+        new GraphicalAbstractModal(this.plugin, item).open();
+      },
+    );
   }
 
   private renderLoadMoreSentinel(
@@ -438,12 +469,19 @@ export class RssReaderView extends ItemView {
   }
 
   private renderTitle(container: HTMLElement, item: RssItem): void {
-    container.createEl("h3", {
-      text:
-        this.translationEnabled && item.translatedTitle
-          ? item.translatedTitle
-          : item.title,
+    const title =
+      this.translationEnabled && item.translatedTitle
+        ? item.translatedTitle
+        : item.title;
+    const heading = container.createEl("h3", {
+      attr: { title },
     });
+    if (titleContainsMath(title) && !this.mathJaxReady) {
+      heading.appendText(title);
+      this.ensureMathJaxLoaded();
+    } else if (renderMixedMathTitle(heading, title)) {
+      this.scheduleMathFlush();
+    }
     if (
       this.translationEnabled &&
       item.titleTranslationStatus === "failed"
@@ -480,6 +518,46 @@ export class RssReaderView extends ItemView {
         },
       });
     }
+  }
+
+  private ensureMathJaxLoaded(): void {
+    if (this.mathJaxReady || this.mathJaxLoading) {
+      return;
+    }
+    const loading = loadMathJax();
+    this.mathJaxLoading = loading;
+    void loading.then(
+      () => {
+        if (this.mathJaxLoading !== loading) {
+          return;
+        }
+        this.mathJaxLoading = null;
+        this.mathJaxReady = true;
+        if (this.viewActive && this.plugin.isDatabaseReady()) {
+          this.refreshTranslatedTitles();
+        }
+      },
+      () => {
+        if (this.mathJaxLoading === loading) {
+          this.mathJaxLoading = null;
+        }
+      },
+    );
+  }
+
+  private scheduleMathFlush(): void {
+    if (this.mathFlushScheduled) {
+      return;
+    }
+    const viewWindow = this.viewWindow();
+    if (!viewWindow) {
+      return;
+    }
+    this.mathFlushScheduled = true;
+    viewWindow.queueMicrotask(() => {
+      this.mathFlushScheduled = false;
+      void finishRenderMath().catch(() => undefined);
+    });
   }
 
   private renderKeywordRelevance(
@@ -800,29 +878,34 @@ export class RssReaderView extends ItemView {
       });
       return;
     }
-    const table = container.createEl("table", {
-      cls: "rss-reader__table rss-reader__table--compact",
+    const tableShell = container.createDiv({
+      cls: "rss-reader__table-shell",
+    });
+    const table = tableShell.createEl("table", {
+      cls: "rss-reader__table rss-reader__table--feeds",
     });
     const header = table.createEl("thead").createEl("tr");
-    for (const label of [
-      t("ui.name"),
-      t("ui.journal"),
-      t("ui.enabled"),
-      t("ui.items"),
-      t("feed.last_success"),
-      t("feed.health"),
-      t("feed.next_attempt"),
-      t("ui.error"),
-      t("ui.actions"),
+    for (const [label, className] of [
+      [t("ui.journal"), "is-text"],
+      [t("ui.enabled"), "is-center"],
+      [t("ui.items"), "is-number"],
+      [t("feed.last_success"), "is-date"],
+      [t("feed.health"), "is-center"],
+      [t("feed.next_attempt"), "is-date"],
+      [t("ui.error"), "is-error"],
+      [t("ui.actions"), "is-actions"],
     ]) {
-      header.createEl("th", { text: label });
+      header.createEl("th", { cls: className, text: label });
     }
     const body = table.createEl("tbody");
     for (const feed of feeds) {
       const row = body.createEl("tr");
-      row.createEl("td", { text: feed.name });
-      row.createEl("td", { text: feed.journalName });
-      const enabledCell = row.createEl("td");
+      row.createEl("td", {
+        cls: "is-text",
+        text: feed.displayJournalName,
+        attr: { title: feed.displayJournalName },
+      });
+      const enabledCell = row.createEl("td", { cls: "is-center" });
       new ToggleComponent(enabledCell)
         .setValue(feed.enabled)
         .setTooltip(feed.enabled ? t("ui.disable_feed") : t("ui.enable_feed"))
@@ -837,32 +920,49 @@ export class RssReaderView extends ItemView {
             await this.refresh();
           });
         });
-      row.createEl("td", { text: String(feed.itemCount) });
       row.createEl("td", {
+        cls: "is-number",
+        text: String(feed.itemCount),
+      });
+      row.createEl("td", {
+        cls: "is-date",
         text: feed.lastSuccessAt ? formatDate(feed.lastSuccessAt) : "—",
       });
-      row.createEl("td", {
-        text:
-          feed.healthStatus === "healthy"
-            ? t("feed.health_healthy")
-            : t(
-                feed.healthStatus === "failing"
-                  ? "feed.health_failing"
-                  : "feed.health_degraded",
-                { count: feed.consecutiveFailures },
-              ),
+      const healthCell = row.createEl("td", { cls: "is-center" });
+      healthCell.createSpan({
+        cls: `rss-reader__status-badge is-${feed.healthStatus}`,
+        text: feed.healthStatus === "healthy"
+          ? t("feed.health_healthy")
+          : t(
+              feed.healthStatus === "failing"
+                ? "feed.health_failing"
+                : "feed.health_degraded",
+              { count: feed.consecutiveFailures },
+            ),
       });
       row.createEl("td", {
+        cls: "is-date",
         text: feed.nextAutoUpdateAt
           ? formatDate(feed.nextAutoUpdateAt)
           : "—",
       });
-      row.createEl("td", { text: feed.lastError ?? "" });
+      row.createEl("td", {
+        cls: "is-error",
+        text: feed.lastError ?? "—",
+        attr: { title: feed.lastError ?? "" },
+      });
       const rowActions = row.createEl("td", {
-        cls: "rss-reader__table-actions",
+        cls: "rss-reader__table-actions is-actions",
       });
       this.actionButton(rowActions, t("ui.edit"), "pencil", () => {
-        new FeedModal(this.plugin, feed, () => this.refresh()).open();
+        new FeedModal(
+          this.plugin,
+          {
+            ...feed,
+            journalName: feed.displayJournalName,
+          },
+          () => this.refresh(),
+        ).open();
       });
       this.actionButton(rowActions, t("ui.update"), "refresh-cw", async () => {
         await this.runFeedUpdate([feed.id]);
@@ -870,7 +970,7 @@ export class RssReaderView extends ItemView {
       this.actionButton(rowActions, t("ui.delete"), "trash-2", () => {
         new ConfirmModal(
           this.app,
-          t("feed.delete_confirm", { name: feed.name }),
+          t("feed.delete_confirm", { name: feed.displayJournalName }),
           async () => {
             await this.plugin.repository.deleteFeeds([feed.id]);
             await this.refresh();
@@ -915,39 +1015,56 @@ export class RssReaderView extends ItemView {
         };
       })
       .sort((left, right) => right.rate - left.rate);
-    const table = container.createEl("table", {
-      cls: "rss-reader__table rss-reader__table--compact",
+    const tableShell = container.createDiv({
+      cls: "rss-reader__table-shell",
+    });
+    const table = tableShell.createEl("table", {
+      cls: "rss-reader__table rss-reader__table--analytics",
     });
     const header = table.createEl("thead").createEl("tr");
-    for (const label of [
-      t("ui.journal"),
-      t("ui.enabled"),
-      t("ui.total_items"),
-      t("ui.unread"),
-      t("ui.hide"),
-      t("ui.interested"),
-      t("ui.archived"),
-      t("ui.expired_2"),
-      t("ui.interest_rate"),
+    for (const [label, className] of [
+      [t("ui.journal"), "is-text"],
+      [t("ui.enabled"), "is-center"],
+      [t("ui.total_items"), "is-number"],
+      [t("ui.unread"), "is-number"],
+      [t("ui.hide"), "is-number"],
+      [t("ui.interested"), "is-number"],
+      [t("ui.archived"), "is-number"],
+      [t("ui.expired_2"), "is-number"],
+      [t("ui.interest_rate"), "is-number"],
     ]) {
-      header.createEl("th", { text: label });
+      header.createEl("th", { cls: className, text: label });
     }
     const body = table.createEl("tbody");
     for (const row of rows) {
       const tr = body.createEl("tr");
+      tr.createEl("td", {
+        cls: "is-text",
+        text: String(row.name),
+        attr: { title: String(row.name) },
+      });
+      tr.createEl("td", {
+        cls: "is-center",
+        text: row.enabled ? t("ui.yes") : t("ui.no"),
+      });
       for (const value of [
-        row.name,
-        row.enabled ? t("ui.yes") : t("ui.no"),
         row.total_count ?? 0,
         row.unread_count ?? 0,
         row.hidden_count ?? 0,
         row.interested_count ?? 0,
         row.archived_count ?? 0,
         row.expired_count ?? 0,
-        `${(row.rate * 100).toFixed(1)}%`,
       ]) {
-        tr.createEl("td", { text: String(value) });
+        tr.createEl("td", {
+          cls: "is-number",
+          text: primitiveText(value, "0"),
+        });
       }
+      const rateCell = tr.createEl("td", { cls: "is-number" });
+      rateCell.createSpan({
+        cls: "rss-reader__rate-badge",
+        text: `${(row.rate * 100).toFixed(1)}%`,
+      });
     }
   }
 
@@ -1098,17 +1215,9 @@ class FeedModal extends Modal {
 
   onOpen(): void {
     this.setTitle(this.feed ? t("ui.edit_feed") : t("ui.add_feed"));
-    let name = this.feed?.name ?? "";
-    let journalName = this.feed?.journalName ?? name;
+    let journalName = this.feed?.journalName ?? "";
     let url = this.feed?.url ?? "";
     let enabled = this.feed?.enabled ?? true;
-    new Setting(this.contentEl)
-      .setName(t("ui.feed_name"))
-      .addText((text) =>
-        text.setValue(name).onChange((value) => {
-          name = value;
-        }),
-      );
     new Setting(this.contentEl)
       .setName(t("ui.journal"))
       .setDesc(t("ui.journal_name_used_when_rss_does_not_provide_one"))
@@ -1135,7 +1244,12 @@ class FeedModal extends Modal {
         .setCta()
         .onClick(() => {
           runUiAction(async () => {
-            const input = { name, journalName, url, enabled };
+            const input = {
+              name: journalName,
+              journalName,
+              url,
+              enabled,
+            };
             if (this.feed) {
               await this.plugin.feedService.updateFeed(this.feed.id, input);
             } else {
@@ -1221,6 +1335,7 @@ class FeedImportModal extends Modal {
                 await this.plugin.feedService.importFeeds(candidates);
               new Notice(t("feed.import_done", {
                 added: result.added,
+                repaired: result.repaired,
                 skipped: result.skipped,
                 failed: result.errors.length,
               }));
@@ -1229,6 +1344,47 @@ class FeedImportModal extends Modal {
             }, button.buttonEl, showPreviewError);
           }),
       );
+  }
+}
+
+class GraphicalAbstractModal extends Modal {
+  constructor(
+    private readonly plugin: RssReaderPlugin,
+    private readonly item: Pick<RssItem, "imageUrl" | "title">,
+  ) {
+    super(plugin.app);
+  }
+
+  onOpen(): void {
+    this.modalEl.addClass("rss-reader__image-modal");
+    this.setTitle(t("ui.graphical_abstract"));
+    if (!this.item.imageUrl) {
+      return;
+    }
+    const frame = this.contentEl.createDiv({
+      cls: "rss-reader__image-modal-frame",
+    });
+    const image = frame.createEl("img", {
+      attr: {
+        alt: t("ui.graphical_abstract_for", {
+          title: this.item.title,
+        }),
+        src: this.item.imageUrl,
+      },
+    });
+    image.decoding = "async";
+    this.plugin.registerDomEvent(image, "error", () => {
+      frame.empty();
+      frame.createEl("p", {
+        cls: "rss-reader__warning",
+        text: t("ui.graphical_abstract_failed_to_load"),
+        attr: { role: "alert" },
+      });
+    });
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
   }
 }
 

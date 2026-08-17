@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<opml version="2.0">
+  <head>
+    <title>Academic RSS Reader - Graphical Abstract Test Feeds</title>
+    <dateCreated>Fri, 14 Aug 2026 00:00:00 GMT</dateCreated>
+  </head>
+  <body>
+    <outline text="Verified graphical abstract feeds" title="Verified graphical abstract feeds">
+      <outline text="Wiley" title="Wiley">
+        <outline type="rss" text="Droplet" title="Droplet"
+          xmlUrl="https://onlinelibrary.wiley.com/feed/27314375/most-recent" />
+        <outline type="rss" text="Advanced Science" title="Advanced Science"
+          xmlUrl="https://onlinelibrary.wiley.com/feed/21983844/most-recent" />
+        <outline type="rss" text="Advanced Functional Materials" title="Advanced Functional Materials"
+          xmlUrl="https://onlinelibrary.wiley.com/feed/16163028/most-recent" />
+        <outline type="rss" text="Small" title="Small"
+          xmlUrl="https://onlinelibrary.wiley.com/feed/16136829/most-recent" />
+        <outline type="rss" text="Angewandte Chemie International Edition" title="Angewandte Chemie International Edition"
+          xmlUrl="https://onlinelibrary.wiley.com/feed/15213773/most-recent" />
+      </outline>
+      <outline text="APS" title="APS">
+        <outline type="rss" text="Physical Review Fluids" title="Physical Review Fluids"
+          xmlUrl="https://feeds.aps.org/rss/recent/prfluids.xml" />
+        <outline type="rss" text="Physical Review Letters" title="Physical Review Letters"
+          xmlUrl="https://feeds.aps.org/rss/recent/prl.xml" />
+        <outline type="rss" text="Physical Review Materials" title="Physical Review Materials"
+          xmlUrl="https://feeds.aps.org/rss/recent/prmaterials.xml" />
+      </outline>
+    </outline>
+    <outline text="Boundary and comparison feeds" title="Boundary and comparison feeds">
+      <outline type="rss" text="Journal of Materials Chemistry A"
+        title="Journal of Materials Chemistry A"
+        xmlUrl="https://feeds.rsc.org/rss/ta" />
+      <outline type="rss" text="Organic Letters"
+        title="Organic Letters"
+        xmlUrl="https://pubs.acs.org/action/showFeed?type=axatoc&amp;feed=rss&amp;jc=orlef7" />
+      <outline type="rss" text="International Journal of Multiphase Flow"
+        title="International Journal of Multiphase Flow"
+        xmlUrl="https://rss.sciencedirect.com/publication/science/03019322" />
+    </outline>
+  </body>
+</opml>

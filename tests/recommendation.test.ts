@@ -169,6 +169,7 @@ describe("recommendation contracts", () => {
       link: "",
       pubDate: "2026-01-01T00:00:00.000Z",
       summary: "Knowledge organization methods",
+      imageUrl: null,
       firstSeenAt: "",
       lastSeenAt: "",
       itemStatus: "unread",

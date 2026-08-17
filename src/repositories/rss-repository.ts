@@ -34,25 +34,53 @@ function textValue(value: SqlValue, fallback = ""): string {
 }
 
 const ITEM_JOURNAL_SELECT = `
-  COALESCE((
-    SELECT GROUP_CONCAT(journal, ' / ')
-    FROM (
-      SELECT journal, MIN(priority) AS priority
-      FROM (
-        SELECT NULLIF(i.article_journal,'') AS journal, 0 AS priority
-        WHERE NULLIF(i.article_journal,'') IS NOT NULL
-        UNION ALL
-        SELECT NULLIF(f.journal_name,''), 1
-        FROM item_feeds x JOIN feeds f ON f.id=x.feed_id
-        WHERE x.item_id=i.id AND NULLIF(f.journal_name,'') IS NOT NULL
-      )
-      GROUP BY journal
-      ORDER BY priority, journal COLLATE NOCASE
-    )
-  ), '') AS journal,
+  COALESCE(
+    NULLIF(i.article_journal,''),
+    (
+      SELECT NULLIF(f.journal_name,'')
+      FROM item_feeds x JOIN feeds f ON f.id=x.feed_id
+      WHERE x.item_id=i.id AND NULLIF(f.journal_name,'') IS NOT NULL
+      ORDER BY x.first_seen_at, f.id
+      LIMIT 1
+    ),
+    ''
+  ) AS journal,
   COALESCE((SELECT GROUP_CONCAT(f.name,' ')
     FROM item_feeds x JOIN feeds f ON f.id=x.feed_id
     WHERE x.item_id=i.id),'') AS feed_names`;
+
+const INFERRED_FEED_JOURNAL_SELECT = `
+  (
+    SELECT NULLIF(i.article_journal,'')
+    FROM item_feeds x
+    JOIN items i ON i.id=x.item_id
+    WHERE x.feed_id=f.id AND NULLIF(i.article_journal,'') IS NOT NULL
+    GROUP BY i.article_journal
+    ORDER BY COUNT(*) DESC, i.article_journal COLLATE NOCASE
+    LIMIT 1
+  ) AS inferred_journal`;
+
+function isMalformedImportedMetadata(value: string): boolean {
+  return /^(?:xmlUrl|htmlUrl)\s*=/i.test(value.trim());
+}
+
+function feedDisplayMetadata(
+  value: string,
+  inferredJournal: string,
+  feedUrl: string,
+): string {
+  if (!isMalformedImportedMetadata(value)) {
+    return value;
+  }
+  if (inferredJournal) {
+    return inferredJournal;
+  }
+  try {
+    return new URL(feedUrl).hostname.replace(/^www\./i, "");
+  } catch {
+    return value;
+  }
+}
 
 function statusPriority(status: ItemStatus): number {
   return {
@@ -94,6 +122,7 @@ export class RssRepository {
         lastSeenAt: string;
         feedName: string;
         link: string;
+        imageUrl: string;
         isLegacyGuid: boolean;
       }>
     >();
@@ -111,6 +140,7 @@ export class RssRepository {
         lastSeenAt: textValue(row.last_seen_at),
         feedName,
         link: textValue(row.link),
+        imageUrl: textValue(row.image_url),
         isLegacyGuid:
           textValue(row.stable_guid).startsWith("doi:") ||
           textValue(row.stable_guid).startsWith("cnki-local:") ||
@@ -230,6 +260,16 @@ export class RssRepository {
                   SELECT MAX(last_seen_at) FROM items
                   WHERE id=$winner OR id IN (${placeholders})
                 ),
+                image_url=COALESCE(
+                  NULLIF(image_url,''),
+                  (
+                    SELECT image_url FROM items
+                    WHERE (id=$winner OR id IN (${placeholders}))
+                      AND NULLIF(image_url,'') IS NOT NULL
+                    ORDER BY CASE WHEN id=$winner THEN 0 ELSE 1 END, id
+                    LIMIT 1
+                  )
+                ),
                 item_status=$status
             WHERE id=$winner
             `,
@@ -273,7 +313,8 @@ export class RssRepository {
     return this.database
       .query<Row>(
         `
-        SELECT f.*, COUNT(ifd.item_id) AS item_count
+        SELECT f.*, COUNT(ifd.item_id) AS item_count,
+          ${INFERRED_FEED_JOURNAL_SELECT}
         FROM feeds f
         LEFT JOIN item_feeds ifd ON ifd.feed_id=f.id
         ${includeDisabled ? "" : "WHERE f.enabled=1"}
@@ -287,7 +328,8 @@ export class RssRepository {
   getFeed(feedId: number): Feed | null {
     const row = this.database.get<Row>(
       `
-      SELECT f.*, COUNT(ifd.item_id) AS item_count
+      SELECT f.*, COUNT(ifd.item_id) AS item_count,
+        ${INFERRED_FEED_JOURNAL_SELECT}
       FROM feeds f
       LEFT JOIN item_feeds ifd ON ifd.feed_id=f.id
       WHERE f.id=$id
@@ -415,6 +457,15 @@ export class RssRepository {
       const insertedIds: number[] = [];
       let duplicateHits = 0;
       let newFeedLinks = 0;
+      db.run(
+        `
+        UPDATE items SET image_url=NULL
+        WHERE image_url='' AND id IN (
+          SELECT item_id FROM item_feeds WHERE feed_id=$feedId
+        )
+        `,
+        { $feedId: feedId },
+      );
 
       for (const item of items) {
         const existingId = this.findExistingItemId(db, item);
@@ -434,7 +485,8 @@ export class RssRepository {
               doi=COALESCE(NULLIF($doi,''),doi),
               link=COALESCE(NULLIF($link,''),link),
               pub_date=COALESCE(NULLIF($pubDate,''),pub_date),
-              summary=COALESCE(NULLIF($summary,''),summary)
+              summary=COALESCE(NULLIF($summary,''),summary),
+              image_url=COALESCE(NULLIF($imageUrl,''),image_url)
             WHERE id=$id
             `,
             this.parsedItemParams(item, itemId),
@@ -443,9 +495,9 @@ export class RssRepository {
           db.run(
             `
             INSERT INTO items(
-              stable_guid,title,title_norm,authors,article_journal,year,doi,link,pub_date,summary
+              stable_guid,title,title_norm,authors,article_journal,year,doi,link,pub_date,summary,image_url
             ) VALUES (
-              $stableGuid,$title,$titleNorm,$authors,$journal,$year,$doi,$link,$pubDate,$summary
+              $stableGuid,$title,$titleNorm,$authors,$journal,$year,$doi,$link,$pubDate,$summary,$imageUrl
             )
             `,
             this.parsedItemParams(item),
@@ -606,7 +658,8 @@ export class RssRepository {
 
   listFeedStats(): Row[] {
     return this.database.query<Row>(`
-      SELECT f.id,f.name,f.enabled,
+      SELECT f.id,f.name,f.journal_name,f.url,f.enabled,
+        ${INFERRED_FEED_JOURNAL_SELECT},
         COUNT(DISTINCT i.id) AS total_count,
         SUM(CASE WHEN i.item_status='unread' THEN 1 ELSE 0 END) AS unread_count,
         SUM(CASE WHEN i.item_status='interested' THEN 1 ELSE 0 END) AS interested_count,
@@ -618,7 +671,14 @@ export class RssRepository {
       LEFT JOIN items i ON i.id=ifd.item_id
       GROUP BY f.id
       ORDER BY f.name COLLATE NOCASE
-    `);
+    `).map((row) => ({
+      ...row,
+      name: feedDisplayMetadata(
+        textValue(row.name),
+        textValue(row.inferred_journal),
+        textValue(row.url),
+      ),
+    }));
   }
 
   getTranslation(
@@ -1345,12 +1405,13 @@ export class RssRepository {
       $title: item.title,
       $titleNorm: item.titleNorm,
       $authors: item.authors,
-      $journal: item.articleJournal?.trim() ?? "",
+      $journal: item.articleJournal?.trim() || null,
       $year: item.year,
       $doi: item.doi,
       $link: item.link,
       $pubDate: item.pubDate,
       $summary: item.summary,
+      $imageUrl: item.imageUrl?.trim() || null,
     };
   }
 
@@ -1395,11 +1456,20 @@ export class RssRepository {
   }
 
   private toFeed(row: Row): Feed {
+    const inferredJournal = textValue(row.inferred_journal);
+    const feedUrl = textValue(row.url);
+    const name = textValue(row.name);
+    const journalName = textValue(row.journal_name ?? row.name);
     return {
       id: Number(row.id),
-      name: textValue(row.name),
-      journalName: textValue(row.journal_name ?? row.name),
-      url: textValue(row.url),
+      name,
+      journalName,
+      displayJournalName: feedDisplayMetadata(
+        journalName,
+        inferredJournal,
+        feedUrl,
+      ),
+      url: feedUrl,
       enabled: Boolean(row.enabled),
       createdAt: textValue(row.created_at),
       updatedAt: textValue(row.updated_at),
@@ -1439,6 +1509,7 @@ export class RssRepository {
       link: textValue(row.link),
       pubDate: textValue(row.pub_date),
       summary: textValue(row.summary),
+      imageUrl: row.image_url ? textValue(row.image_url) : null,
       firstSeenAt: textValue(row.first_seen_at),
       lastSeenAt: textValue(row.last_seen_at),
       itemStatus: status as ItemStatus,
