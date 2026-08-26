@@ -16,6 +16,7 @@ import {
 } from "./database/database";
 import {
   DEFAULT_SETTINGS,
+  normalizeSettings,
   type RssReaderSettings,
 } from "./models/settings";
 import { RssRepository } from "./repositories/rss-repository";
@@ -128,10 +129,7 @@ export default class RssReaderPlugin extends Plugin {
       typeof legacyStoredSettings.llmApiKey === "string"
         ? legacyStoredSettings.llmApiKey.trim()
         : "";
-    this.settings = {
-      ...DEFAULT_SETTINGS,
-      ...storedSettings,
-    };
+    this.settings = normalizeSettings(storedSettings);
     const legacySettings = this.settings as RssReaderSettings & {
       backupDirectory?: string;
       databaseDirectory?: string;

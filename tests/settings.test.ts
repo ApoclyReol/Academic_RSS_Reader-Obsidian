@@ -59,7 +59,11 @@ import type {
 } from "obsidian";
 
 import { RssReaderSettingTab } from "../src/settings/rss-reader-setting-tab";
-import { DEFAULT_SETTINGS } from "../src/models/settings";
+import {
+  DEFAULT_SETTINGS,
+  normalizeSettings,
+  type RssReaderSettings,
+} from "../src/models/settings";
 import type RssReaderPlugin from "../src/main";
 
 describe("declarative settings", () => {
@@ -76,18 +80,56 @@ describe("declarative settings", () => {
     expect(groups.map((group) => group.heading)).toEqual([
       "数据库存储",
       "订阅更新",
+      "文献卡片",
       "实验性网页翻译",
       "LLM 推荐复核",
     ]);
     expect(controls.map((item) => item.control.key)).toEqual([
       "autoUpdateOnStartup",
       "hiddenExpireDays",
+      "cardShowJournal",
+      "cardShowAuthors",
+      "cardShowPublicationDate",
+      "cardShowDoi",
+      "cardShowAbstract",
+      "cardShowGraphicalAbstract",
       "targetLanguage",
       "llmBaseUrl",
       "llmModel",
       "userInterest",
     ]);
     expect(items.filter((item) => "render" in item)).toHaveLength(6);
+  });
+
+  it("fills and normalizes paper-card defaults for stored settings", () => {
+    const upgraded = normalizeSettings({
+      targetLanguage: "en",
+    });
+    expect(upgraded).toMatchObject({
+      cardShowJournal: true,
+      cardShowAuthors: false,
+      cardShowPublicationDate: false,
+      cardShowDoi: false,
+      cardShowAbstract: false,
+      cardShowGraphicalAbstract: true,
+    });
+
+    const invalid = normalizeSettings({
+      cardShowJournal: "false",
+      cardShowAuthors: 1,
+      cardShowPublicationDate: null,
+      cardShowDoi: {},
+      cardShowAbstract: [],
+      cardShowGraphicalAbstract: "true",
+    } as unknown as Partial<RssReaderSettings>);
+    expect(invalid).toMatchObject({
+      cardShowJournal: true,
+      cardShowAuthors: false,
+      cardShowPublicationDate: false,
+      cardShowDoi: false,
+      cardShowAbstract: false,
+      cardShowGraphicalAbstract: true,
+    });
   });
 
   it("keeps normalized values when declarative controls save", async () => {
@@ -167,6 +209,25 @@ describe("declarative settings", () => {
     void tab.setControlValue("targetLanguage", "en");
     await new Promise<void>((resolve) => settingsWindow.setTimeout(resolve, 300));
 
+    expect(saveSettings).toHaveBeenCalledWith(true);
+  });
+
+  it("marks paper-card changes for reader refresh", async () => {
+    const saveSettings = vi.fn(async () => undefined);
+    const plugin = createPluginStub({ saveSettings });
+    const settingsWindow = new HappyWindow();
+    const app = {
+      workspace: { containerEl: settingsWindow.document.body },
+    } as unknown as App;
+    const tab = new RssReaderSettingTab(app, plugin);
+
+    void tab.setControlValue("cardShowAuthors", true);
+    void tab.setControlValue("cardShowAbstract", true);
+    await new Promise<void>((resolve) => settingsWindow.setTimeout(resolve, 300));
+
+    expect(plugin.settings.cardShowAuthors).toBe(true);
+    expect(plugin.settings.cardShowAbstract).toBe(true);
+    expect(saveSettings).toHaveBeenCalledTimes(1);
     expect(saveSettings).toHaveBeenCalledWith(true);
   });
 });

@@ -1,6 +1,6 @@
 # 数据库设计
 
-本文描述 Academic RSS Reader v1.5.0 的有效 schema 5。schema 事实源为
+本文描述 Academic RSS Reader v1.6.0 的有效 schema 5。schema 事实源为
 `src/database/schema.ts`，业务 SQL 事实源为 `src/repositories/rss-repository.ts`。
 
 ## 存储位置与运行参数

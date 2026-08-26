@@ -93,6 +93,67 @@ export class RssReaderSettingTab extends PluginSettingTab {
       },
       {
         type: "group",
+        heading: t("ui.paper_cards"),
+        cls: SETTINGS_CLASS,
+        items: [
+          {
+            name: t("ui.show_journal_on_paper_cards"),
+            desc: t("ui.show_journal_on_paper_cards_description"),
+            control: {
+              type: "toggle",
+              key: "cardShowJournal",
+              defaultValue: true,
+            },
+          },
+          {
+            name: t("ui.show_authors_on_paper_cards"),
+            desc: t("ui.show_authors_on_paper_cards_description"),
+            control: {
+              type: "toggle",
+              key: "cardShowAuthors",
+              defaultValue: false,
+            },
+          },
+          {
+            name: t("ui.show_publication_date_on_paper_cards"),
+            desc: t("ui.show_publication_date_on_paper_cards_description"),
+            control: {
+              type: "toggle",
+              key: "cardShowPublicationDate",
+              defaultValue: false,
+            },
+          },
+          {
+            name: t("ui.show_doi_on_paper_cards"),
+            desc: t("ui.show_doi_on_paper_cards_description"),
+            control: {
+              type: "toggle",
+              key: "cardShowDoi",
+              defaultValue: false,
+            },
+          },
+          {
+            name: t("ui.show_text_abstract_on_paper_cards"),
+            desc: t("ui.show_text_abstract_on_paper_cards_description"),
+            control: {
+              type: "toggle",
+              key: "cardShowAbstract",
+              defaultValue: false,
+            },
+          },
+          {
+            name: t("ui.show_graphical_abstract_on_paper_cards"),
+            desc: t("ui.show_graphical_abstract_on_paper_cards_description"),
+            control: {
+              type: "toggle",
+              key: "cardShowGraphicalAbstract",
+              defaultValue: true,
+            },
+          },
+        ],
+      },
+      {
+        type: "group",
         heading: t("ui.experimental_web_translation"),
         cls: SETTINGS_CLASS,
         items: [
@@ -199,6 +260,21 @@ export class RssReaderSettingTab extends PluginSettingTab {
           return;
         }
         this.plugin.settings.hiddenExpireDays = value;
+        break;
+      case "cardShowJournal":
+      case "cardShowAuthors":
+      case "cardShowPublicationDate":
+      case "cardShowDoi":
+      case "cardShowAbstract":
+      case "cardShowGraphicalAbstract":
+        if (typeof value !== "boolean") {
+          return;
+        }
+        if (this.plugin.settings[key] === value) {
+          return;
+        }
+        this.plugin.settings[key] = value;
+        refreshReader = true;
         break;
       case "targetLanguage":
         if (value !== "zh-CN" && value !== "en") {

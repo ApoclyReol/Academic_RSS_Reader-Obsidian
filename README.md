@@ -9,7 +9,7 @@ Academic RSS Reader is a desktop Obsidian plugin for the first pass of academic 
 The plugin focuses on the step between “new papers arrived” and “I know what deserves a closer read”. It is designed to reduce repetitive triage, not to replace a reference manager or a full-text database.
 
 > [!IMPORTANT]
-> Current recommended version: **1.5.0**. This version requires Obsidian **1.13.0 or later** and is desktop-only. Its bundled runtime must also provide Node.js **22.16 or later**, `node:sqlite` `DatabaseSync`, and the SQLite Backup API. Update Obsidian before installing or updating when possible.
+> Current recommended version: **1.6.0**. This version requires Obsidian **1.13.0 or later** and is desktop-only. Its bundled runtime must also provide Node.js **22.16 or later**, `node:sqlite` `DatabaseSync`, and the SQLite Backup API. Update Obsidian before installing or updating when possible.
 
 ## Why use Academic RSS Reader
 
@@ -63,6 +63,7 @@ Academic RSS Reader is a good fit if you:
 
 - Manage papers as **Unread**, **Interested**, **Archived**, **Hidden**, or **Expired**.
 - Load long lists continuously in batches of 100 instead of rendering the whole database at once.
+- Choose whether cards show the journal, authors, publication date, DOI, feed-provided text abstract, and graphical abstract. Titles, relevance, and actions always remain visible.
 - Open the original paper in the system browser.
 - Undo the most recent status action during the current reader session.
 
@@ -87,8 +88,10 @@ The local model needs at least two positive and two negative training papers. Un
 
 ### Data model and safety boundaries
 
-- Each card shows one journal name: an article-level value refreshed from RSS takes priority, with the earliest associated feed default used only as a fallback.
-- Paper cards use a fixed 13rem height with increased row spacing. Three title lines are always reserved, with longer titles clipped after the third line without inserting a misleading mid-title ellipsis; actions immediately follow the relevance block.
+- When journal display is enabled, each card shows one journal name: an article-level value refreshed from RSS takes priority, with the earliest associated feed default used only as a fallback.
+- Card settings default to the v1.5.0 presentation: journal and graphical abstract visible, with authors, publication date, DOI, and text abstract hidden.
+- Every card uses the same height derived from the globally enabled rows. Titles reserve three lines, authors one line, and text abstracts three lines; missing item values and image loading do not change individual card height.
+- Turning off graphical abstracts prevents card image elements and their remote requests from being created. Images are still loaded lazily and hidden on failure when enabled.
 - Title fragments delimited by `$...$`, `$$...$$`, `\(...\)`, or `\[...\]` use Obsidian's native MathJax renderer; invalid fragments fall back to their original text.
 - Article links accept only `http:` and `https:`. RSS/XML rejects `DOCTYPE`, invalid root structures, and responses over 10 MiB; only known tracking parameters are removed, while business query parameters are preserved.
 - LLM endpoints must use HTTPS, or HTTP on `localhost`, `127.0.0.1`, or `::1`. Requests have a 30-second timeout and bounded retries.
@@ -151,6 +154,7 @@ The plugin does not create or open a database during startup. Database creation 
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [Security and privacy](SECURITY.md)
 - [Changelog](CHANGELOG.md)
+- [v1.6.0 release notes](docs/V1_6_0_RELEASE.md)
 - [v1.5.0 release notes](docs/V1_5_0_RELEASE.md)
 - [v1.4.1 release notes](docs/V1_4_1_RELEASE.md)
 - [v1.4.0 release notes](docs/V1_4_0_RELEASE.md)

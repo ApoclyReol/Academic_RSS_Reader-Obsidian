@@ -27,6 +27,15 @@ import { statusLabel } from "./status-label";
 import { executeUiAction } from "./ui-action";
 import { recommendationExplanation } from "./recommendation-explanation";
 import { renderItemImage } from "./item-image";
+import { captureScrollTop, restoreScrollTop } from "./scroll-position";
+import {
+  renderCardLabeledField,
+  renderCardMetadata,
+} from "./card-fields";
+import {
+  buildCardPresentation,
+  cardLayoutOptions,
+} from "./card-presentation";
 import {
   renderMixedMathTitle,
   titleContainsMath,
@@ -38,6 +47,10 @@ interface LastAction {
   itemIds: number[];
   fromStatus: ItemStatus;
   label: string;
+}
+
+interface RefreshOptions {
+  preserveScrollTop?: number;
 }
 
 const READER_BATCH_SIZE = 100;
@@ -62,6 +75,7 @@ export class RssReaderView extends ItemView {
   private loadingMore = false;
   private rendering = false;
   private renderAgain = false;
+  private pendingScrollTop: number | undefined;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -94,11 +108,16 @@ export class RssReaderView extends ItemView {
     this.loadMoreObserver?.disconnect();
   }
 
-  async refresh(): Promise<void> {
+  async refresh(options: RefreshOptions = {}): Promise<void> {
+    if (options.preserveScrollTop !== undefined) {
+      this.pendingScrollTop = options.preserveScrollTop;
+    }
     if (this.rendering) {
       this.renderAgain = true;
       return;
     }
+    const preserveScrollTop = this.pendingScrollTop;
+    this.pendingScrollTop = undefined;
     this.rendering = true;
     try {
       this.titleObserver?.disconnect();
@@ -117,8 +136,28 @@ export class RssReaderView extends ItemView {
       }
       container.empty();
       container.addClass("rss-reader");
+      const cardLayout = cardLayoutOptions(this.plugin.settings);
+      container.toggleClass(
+        "rss-reader--card-metadata",
+        cardLayout.showMetadata,
+      );
+      container.toggleClass(
+        "rss-reader--card-authors",
+        cardLayout.showAuthors,
+      );
+      container.toggleClass(
+        "rss-reader--card-abstract",
+        cardLayout.showAbstract,
+      );
+      container.toggleClass(
+        "rss-reader--card-compact",
+        cardLayout.showMetadata &&
+          cardLayout.showAuthors &&
+          cardLayout.showAbstract,
+      );
       if (!this.plugin.isDatabaseReady()) {
         this.renderDatabaseSetup(container);
+        restoreScrollTop(container, preserveScrollTop);
         return;
       }
       this.renderHeader(container);
@@ -129,6 +168,7 @@ export class RssReaderView extends ItemView {
       } else {
         this.renderAnalytics(container);
       }
+      restoreScrollTop(container, preserveScrollTop);
     } finally {
       this.rendering = false;
       if (this.renderAgain) {
@@ -149,6 +189,9 @@ export class RssReaderView extends ItemView {
         translationRequestKey(itemId, field, targetLanguage),
       );
     }
+    if (field !== "title") {
+      return;
+    }
     if (!this.plugin.isDatabaseReady()) {
       return;
     }
@@ -162,18 +205,10 @@ export class RssReaderView extends ItemView {
     if (!item) {
       return;
     }
-    if (field === "title") {
-      const title = card.querySelector(".rss-reader__item-title");
-      if (title?.instanceOf(HTMLElement)) {
-        title.empty();
-        this.renderTitle(title, item);
-      }
-    } else {
-      const abstract = card.querySelector(".rss-reader__item-abstract");
-      if (abstract?.instanceOf(HTMLElement)) {
-        abstract.empty();
-        abstract.setText(item.translatedAbstract ?? item.summary);
-      }
+    const title = card.querySelector(".rss-reader__item-title");
+    if (title?.instanceOf(HTMLElement)) {
+      title.empty();
+      this.renderTitle(title, item);
     }
   }
 
@@ -336,6 +371,8 @@ export class RssReaderView extends ItemView {
   }
 
   private renderItemCard(container: HTMLElement, item: RssItem): void {
+    const layout = cardLayoutOptions(this.plugin.settings);
+    const presentation = buildCardPresentation(item, this.plugin.settings);
     const card = container.createDiv({ cls: "rss-reader__item" });
     card.dataset.itemId = String(item.id);
     const content = card.createDiv({
@@ -345,11 +382,24 @@ export class RssReaderView extends ItemView {
       cls: "rss-reader__item-title",
     });
     this.renderTitle(titleContainer, item);
-    if (item.journal) {
-      content.createEl("p", {
-        cls: "rss-reader__caption",
-        text: item.journal,
-      });
+    if (layout.showMetadata) {
+      renderCardMetadata(content, presentation);
+    }
+    if (layout.showAuthors) {
+      renderCardLabeledField(
+        content,
+        "rss-reader__item-authors",
+        t("ui.authors"),
+        presentation.authors,
+      );
+    }
+    if (layout.showAbstract) {
+      renderCardLabeledField(
+        content,
+        "rss-reader__item-abstract",
+        t("ui.abstract"),
+        presentation.abstract,
+      );
     }
     const footer = content.createDiv({
       cls: "rss-reader__item-footer",
@@ -366,7 +416,10 @@ export class RssReaderView extends ItemView {
     }
     renderItemImage(
       card,
-      item,
+      {
+        imageUrl: presentation.imageUrl,
+        title: item.title,
+      },
       (target, type, callback) => {
         this.registerDomEvent(target, type, callback);
       },
@@ -694,15 +747,24 @@ export class RssReaderView extends ItemView {
     const transitions = transitionsFor(item.itemStatus);
     for (const [label, status] of transitions) {
       this.actionButton(container, label, statusIcon(status), async () => {
+        const preserveScrollTop = this.readerScrollTop();
         this.lastAction = {
           itemIds: [item.id],
           fromStatus: item.itemStatus,
           label: item.title,
         };
         await this.plugin.repository.setItemStatus([item.id], status);
-        await this.refresh();
+        await this.refresh({ preserveScrollTop });
       });
     }
+  }
+
+  private readerScrollTop(): number | undefined {
+    const container = this.containerEl.children[1];
+    if (!container?.instanceOf(HTMLElement)) {
+      return undefined;
+    }
+    return captureScrollTop(container);
   }
 
   private renderRecommendation(container: HTMLElement): void {
