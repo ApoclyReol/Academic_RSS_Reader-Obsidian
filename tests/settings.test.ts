@@ -62,6 +62,7 @@ import { RssReaderSettingTab } from "../src/settings/rss-reader-setting-tab";
 import {
   DEFAULT_SETTINGS,
   normalizeSettings,
+  SUPPORTED_TARGET_LANGUAGES,
   type RssReaderSettings,
 } from "../src/models/settings";
 import type RssReaderPlugin from "../src/main";
@@ -98,6 +99,17 @@ describe("declarative settings", () => {
       "llmModel",
       "userInterest",
     ]);
+    const translationControl = controls.find(
+      (item) => item.control.key === "targetLanguage",
+    )?.control;
+    expect(translationControl && "options" in translationControl
+      ? Object.keys(translationControl.options ?? {})
+      : []).toEqual([...SUPPORTED_TARGET_LANGUAGES]);
+    if (translationControl && "options" in translationControl) {
+      for (const language of SUPPORTED_TARGET_LANGUAGES) {
+        expect(translationControl.options[language]).toContain(`(${language})`);
+      }
+    }
     expect(items.filter((item) => "render" in item)).toHaveLength(6);
   });
 
@@ -121,6 +133,7 @@ describe("declarative settings", () => {
       cardShowDoi: {},
       cardShowAbstract: [],
       cardShowGraphicalAbstract: "true",
+      targetLanguage: "xx",
     } as unknown as Partial<RssReaderSettings>);
     expect(invalid).toMatchObject({
       cardShowJournal: true,
@@ -129,6 +142,7 @@ describe("declarative settings", () => {
       cardShowDoi: false,
       cardShowAbstract: false,
       cardShowGraphicalAbstract: true,
+      targetLanguage: "zh-CN",
     });
   });
 

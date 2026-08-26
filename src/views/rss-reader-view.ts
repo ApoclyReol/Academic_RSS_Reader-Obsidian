@@ -72,6 +72,8 @@ export class RssReaderView extends ItemView {
   private readerList: HTMLElement | null = null;
   private readerCaption: HTMLElement | null = null;
   private readerSentinel: HTMLElement | null = null;
+  private readerModeActions: HTMLElement | null = null;
+  private translationRetryButton: HTMLButtonElement | null = null;
   private loadingMore = false;
   private rendering = false;
   private renderAgain = false;
@@ -129,6 +131,8 @@ export class RssReaderView extends ItemView {
       this.readerList = null;
       this.readerCaption = null;
       this.readerSentinel = null;
+      this.readerModeActions = null;
+      this.translationRetryButton = null;
       this.loadingMore = false;
       const container = this.containerEl.children[1];
       if (!container?.instanceOf(HTMLElement)) {
@@ -192,17 +196,26 @@ export class RssReaderView extends ItemView {
     if (field !== "title") {
       return;
     }
+    this.updateTranslationRetryAction();
     if (!this.plugin.isDatabaseReady()) {
       return;
     }
     const card = this.containerEl.querySelector(
       `.rss-reader__item[data-item-id="${itemId}"]`,
     );
-    if (!card?.instanceOf(HTMLElement)) {
-      return;
-    }
     const item = this.plugin.repository.getItem(itemId, targetLanguage);
     if (!item) {
+      return;
+    }
+    if (targetLanguage === this.plugin.settings.targetLanguage) {
+      const itemIndex = this.readerItems.findIndex(
+        (readerItem) => readerItem.id === itemId,
+      );
+      if (itemIndex >= 0) {
+        this.readerItems[itemIndex] = item;
+      }
+    }
+    if (!card?.instanceOf(HTMLElement)) {
       return;
     }
     const title = card.querySelector(".rss-reader__item-title");
@@ -210,6 +223,7 @@ export class RssReaderView extends ItemView {
       title.empty();
       this.renderTitle(title, item);
     }
+    this.updateTranslationRetryAction();
   }
 
   refreshTranslatedTitles(): void {
@@ -313,6 +327,7 @@ export class RssReaderView extends ItemView {
     const actions = container.createDiv({
       cls: "rss-reader__mode-switch",
     });
+    this.readerModeActions = actions;
     this.actionButton(actions, t("ui.refresh"), "refresh-cw", () => this.refresh());
     this.actionButton(
       actions,
@@ -352,6 +367,7 @@ export class RssReaderView extends ItemView {
       "aria-pressed",
       String(this.translationEnabled),
     );
+    this.updateTranslationRetryAction();
 
     if (this.readerItems.length === 0) {
       container.createDiv({
@@ -659,6 +675,32 @@ export class RssReaderView extends ItemView {
     });
   }
 
+  private updateTranslationRetryAction(): void {
+    const shouldShow =
+      this.translationEnabled &&
+      this.plugin.isDatabaseReady() &&
+      this.plugin.translationService.hasFailed("title");
+    if (!shouldShow) {
+      this.translationRetryButton?.remove();
+      this.translationRetryButton = null;
+      return;
+    }
+    if (this.translationRetryButton?.isConnected || !this.readerModeActions) {
+      return;
+    }
+    this.translationRetryButton = this.actionButton(
+      this.readerModeActions,
+      t("ui.retry_translation"),
+      "rotate-ccw",
+      async () => {
+        const preserveScrollTop = this.readerScrollTop();
+        await this.plugin.translationService.retryFailed("title");
+        this.updateTranslationRetryAction();
+        await this.refresh({ preserveScrollTop });
+      },
+    );
+  }
+
   private observeVisibleTitles(
     list: HTMLElement,
     items: RssItem[],
@@ -702,6 +744,7 @@ export class RssReaderView extends ItemView {
           if (
             !item ||
             item.translatedTitle ||
+            item.titleTranslationStatus === "failed" ||
             this.requestedTitleIds.has(
               translationRequestKey(item.id, "title", this.plugin.settings.targetLanguage),
             )
@@ -716,11 +759,9 @@ export class RssReaderView extends ItemView {
           this.requestedTitleIds.add(requestKey);
           runUiAction(
             () =>
-              this.plugin.translationService.requestManual(
-                item.id,
-                "title",
-                item.titleTranslationStatus === "failed",
-              ).then(() => undefined),
+              this.plugin.translationService
+                .requestManual(item.id, "title")
+                .then(() => undefined),
             undefined,
             (error) => {
               this.requestedTitleIds.delete(requestKey);

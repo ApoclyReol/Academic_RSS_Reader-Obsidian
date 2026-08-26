@@ -1,5 +1,9 @@
 import { Window as HappyWindow } from "happy-dom";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("obsidian", () => ({
+  requestUrl: vi.fn(),
+}));
 
 import {
   hashText,
@@ -8,11 +12,20 @@ import {
 } from "../src/services/translation-service";
 import { RssDatabase } from "../src/database/database";
 import { RssRepository } from "../src/repositories/rss-repository";
-import { DEFAULT_SETTINGS } from "../src/models/settings";
-import type { TranslationProvider } from "../src/services/translation-provider";
+import {
+  DEFAULT_SETTINGS,
+  type RssReaderSettings,
+} from "../src/models/settings";
+import {
+  TranslationRequestError,
+  type TranslationProvider,
+} from "../src/services/translation-provider";
 import { MemoryAdapter } from "./helpers/memory-adapter";
 
-const timerWindow = new HappyWindow() as unknown as Pick<Window, "setTimeout">;
+const timerWindow = new HappyWindow() as unknown as Pick<
+  Window,
+  "setTimeout" | "clearTimeout"
+>;
 
 describe("translation helpers", () => {
   const resources: Array<{ database: RssDatabase; adapter: MemoryAdapter }> = [];
@@ -27,6 +40,7 @@ describe("translation helpers", () => {
   });
   it("skips Chinese text for the Chinese target", () => {
     expect(isTargetLanguage("这是一个中文标题", "zh-CN")).toBe(true);
+    expect(isTargetLanguage("这是一个中文标题", "zh-TW")).toBe(false);
     expect(isTargetLanguage("A study of libraries", "zh-CN")).toBe(false);
     expect(isTargetLanguage("人工智能 AI", "zh-CN")).toBe(true);
   });
@@ -36,7 +50,7 @@ describe("translation helpers", () => {
     expect(hashText("same")).not.toBe(hashText("changed"));
   });
 
-  it("removes a failed request placeholder so the next request can retry", async () => {
+  it("bounds automatic retries and keeps the failed task for manual retry", async () => {
     const adapter = new MemoryAdapter();
     const database = new RssDatabase(adapter, "Data/rss-reader.sqlite3");
     await database.initialize();
@@ -72,18 +86,145 @@ describe("translation helpers", () => {
       provider,
       () => DEFAULT_SETTINGS,
       timerWindow,
+      undefined,
+      undefined,
+      {
+        retryDelaysMs: [1_000, 1_000, 1_000],
+      },
     );
     try {
       const changes: string[] = [];
       service.onChange((change) => changes.push(`${change.targetLanguage}:${change.status}`));
       await service.requestManual(insertedIds[0]!, "title");
       await waitForCondition(() => attempts === 3);
-      expect(repository.getTranslation(insertedIds[0]!, "title", "zh-CN")).toBeNull();
+      expect(
+        repository.getTranslation(insertedIds[0]!, "title", "zh-CN"),
+      ).toMatchObject({
+        status: "failed",
+        attemptCount: 3,
+        lastError: "provider failed",
+      });
       expect(changes[changes.length - 1]).toBe("zh-CN:failed");
 
-      const retry = service.requestManual(insertedIds[0]!, "title");
+      const retry = service.retryFailed("title");
       await retry;
       await waitForCondition(() => attempts === 6);
+    } finally {
+      await service.stop();
+    }
+  }, 15_000);
+
+  it("times out a stalled provider and stops after the retry budget", async () => {
+    const adapter = new MemoryAdapter();
+    const database = new RssDatabase(adapter, "Data/rss-reader.sqlite3");
+    await database.initialize();
+    resources.push({ database, adapter });
+    const repository = new RssRepository(database);
+    const feedId = await repository.addFeed({
+      name: "Timeout feed",
+      url: "https://example.com/timeout",
+      enabled: true,
+    });
+    const { insertedIds } = await repository.upsertParsedItems(feedId, [{
+      stableGuid: "timeout-guid",
+      title: "A stalled translation",
+      titleNorm: "a stalled translation",
+      authors: "Alice",
+      journal: "Timeout journal",
+      year: "2026",
+      doi: "",
+      link: "",
+      pubDate: "",
+      summary: "",
+    }]);
+    const notices: unknown[] = [];
+    const provider: TranslationProvider = {
+      id: "google-web",
+      translate: async () => new Promise<never>(() => undefined),
+    };
+    const service = new TranslationService(
+      repository,
+      provider,
+      () => DEFAULT_SETTINGS,
+      timerWindow,
+      undefined,
+      (error) => notices.push(error),
+      {
+        requestTimeoutMs: 25,
+        retryDelaysMs: [1_000, 1_000, 1_000],
+      },
+    );
+    try {
+      await service.requestManual(insertedIds[0]!, "title");
+      await waitForCondition(
+        () =>
+          repository.getTranslation(insertedIds[0]!, "title", "zh-CN")
+            ?.status === "failed",
+      );
+      expect(
+        repository.getTranslation(insertedIds[0]!, "title", "zh-CN"),
+      ).toMatchObject({ attemptCount: 3, status: "failed" });
+      expect(notices).toHaveLength(2);
+    } finally {
+      await service.stop();
+    }
+  }, 15_000);
+
+  it("honors a retryable provider error without retrying forever", async () => {
+    const adapter = new MemoryAdapter();
+    const database = new RssDatabase(adapter, "Data/rss-reader.sqlite3");
+    await database.initialize();
+    resources.push({ database, adapter });
+    const repository = new RssRepository(database);
+    const feedId = await repository.addFeed({
+      name: "Rate limit feed",
+      url: "https://example.com/rate-limit",
+      enabled: true,
+    });
+    const { insertedIds } = await repository.upsertParsedItems(feedId, [{
+      stableGuid: "rate-limit-guid",
+      title: "A rate limited translation",
+      titleNorm: "a rate limited translation",
+      authors: "Alice",
+      journal: "Rate limit journal",
+      year: "2026",
+      doi: "",
+      link: "",
+      pubDate: "",
+      summary: "",
+    }]);
+    let attempts = 0;
+    const notices: unknown[] = [];
+    const provider: TranslationProvider = {
+      id: "google-web",
+      translate: async () => {
+        attempts += 1;
+        throw new TranslationRequestError("rate limited", {
+          kind: "rate-limit",
+          retryable: true,
+          retryAfterMs: 1,
+          status: 429,
+        });
+      },
+    };
+    const service = new TranslationService(
+      repository,
+      provider,
+      () => DEFAULT_SETTINGS,
+      timerWindow,
+      undefined,
+      (error) => notices.push(error),
+      {
+        retryDelaysMs: [1_000, 1_000, 1_000],
+      },
+    );
+    try {
+      await service.requestManual(insertedIds[0]!, "title");
+      await waitForCondition(() => attempts === 3);
+      expect(
+        repository.getTranslation(insertedIds[0]!, "title", "zh-CN"),
+      ).toMatchObject({ attemptCount: 3, status: "failed" });
+      expect(notices).toHaveLength(2);
     } finally {
       await service.stop();
     }
@@ -112,7 +253,10 @@ describe("translation helpers", () => {
       pubDate: "",
       summary: "",
     }]);
-    const settings = { ...DEFAULT_SETTINGS, targetLanguage: "zh-CN" };
+    const settings: RssReaderSettings = {
+      ...DEFAULT_SETTINGS,
+      targetLanguage: "zh-CN",
+    };
     const targets: string[] = [];
     const provider: TranslationProvider = {
       id: "google-web",

@@ -2,6 +2,7 @@
   --rss-card-abstract-height: 0rem;
   --rss-card-authors-height: 0rem;
   --rss-card-content-gap: var(--size-4-3);
+  --rss-card-footer-relevance-width: 15rem;
   --rss-card-label-width: 4.5rem;
   --rss-card-metadata-height: 0rem;
   --rss-gap: var(--size-4-3);
@@ -426,17 +427,23 @@
 
 .rss-reader__item-footer {
   align-items: center;
-  display: flex;
+  display: grid;
   gap: var(--size-4-2);
+  grid-template-columns: minmax(0, var(--rss-card-footer-relevance-width)) auto;
   margin-top: auto;
   min-width: 0;
   overflow: hidden;
 }
 
 .rss-reader__item-footer .rss-reader__item-actions {
-  flex: 0 0 auto;
+  grid-column: 2;
+  justify-self: start;
   flex-wrap: nowrap;
   margin: 0;
+}
+
+.rss-reader__item-footer .rss-reader__item-relevance {
+  width: 100%;
 }
 
 .rss-reader__recommendation {
@@ -651,6 +658,10 @@
 }
 
 @media (max-width: 900px) {
+  .rss-reader {
+    --rss-card-footer-relevance-width: 10rem;
+  }
+
   .rss-reader__header {
     align-items: flex-start;
     flex-direction: column;

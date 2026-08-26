@@ -26,7 +26,10 @@ import { DatabaseOperationCoordinator } from "./services/database-operation-coor
 import { LlmService } from "./services/llm-service";
 import { RecommendationService } from "./services/recommendation-service";
 import { GoogleWebTranslationProvider } from "./services/translation-provider";
-import { TranslationService } from "./services/translation-service";
+import {
+  TranslationNoticeError,
+  TranslationService,
+} from "./services/translation-service";
 import { resolveVaultDirectoryPath } from "./services/vault-path";
 import { RssReaderView } from "./views/rss-reader-view";
 import type { TranslationChange } from "./services/translation-service";
@@ -538,9 +541,13 @@ export default class RssReaderPlugin extends Plugin {
         timerWindow,
         this.operationCoordinator,
         (error) => {
-          new Notice(t("translation.task_failed", {
-            error: error instanceof Error ? error.message : String(error),
-          }), 10_000);
+          const message =
+            error instanceof TranslationNoticeError
+              ? error.message
+              : t("translation.task_failed", {
+                  error: error instanceof Error ? error.message : String(error),
+                });
+          new Notice(message, 10_000);
         },
       );
       const recommendationService = new RecommendationService(

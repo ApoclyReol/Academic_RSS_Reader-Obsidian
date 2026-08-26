@@ -47,9 +47,9 @@ Use **Load target database** only when the target already contains a valid datab
 
 ## Title translation fails
 
-Title translation uses an unofficial Google web endpoint that may be rate-limited, regionally unavailable, or changed upstream. A failure does not overwrite original titles and does not interrupt reading, feeds, recommendations, or analysis.
+Title translation uses an unofficial Google web endpoint that may be rate-limited, regionally unavailable, or changed upstream. Each request times out after 15 seconds; network, rate-limit, and server errors are attempted at most three times in total with increasing delays. After the retry budget is exhausted, automatic requests stop and the failed task remains available through **Retry translation**. A failure does not overwrite original titles and does not interrupt reading, feeds, recommendations, or analysis.
 
-Disable title translation to continue using original titles.
+Use **Retry translation** after the network recovers, or disable title translation to continue using original titles. The target language is configurable in settings; source language is detected automatically.
 
 ## LLM connection testing fails
 

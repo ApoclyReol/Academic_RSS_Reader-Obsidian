@@ -9,6 +9,11 @@ import type { SettingDefinitionItem } from "obsidian";
 
 import type RssReaderPlugin from "../main";
 import { t } from "../i18n";
+import {
+  isSupportedTargetLanguage,
+  SUPPORTED_TARGET_LANGUAGES,
+  type TargetLanguage,
+} from "../models/settings";
 import { DirectorySuggest } from "./directory-suggest";
 
 const DATABASE_FILE_NAME = ["rss", "reader.sqlite3"].join("-");
@@ -158,18 +163,22 @@ export class RssReaderSettingTab extends PluginSettingTab {
         cls: SETTINGS_CLASS,
         items: [
           {
-            name: t("ui.target_language"),
+            name: t("ui.translation_target_language"),
             desc: `${t(
               "ui.uses_an_unofficial_google_web_endpoint_without_authentication_it_may_be_",
-            )} ${t("ui.simplified_chinese_is_the_default_and_recommended_target")}`,
+            )} ${t("ui.simplified_chinese_is_the_default_and_recommended_target")} ${t(
+              "ui.translation_target_language_code_description",
+            )}`,
             control: {
               type: "dropdown",
               key: "targetLanguage",
               defaultValue: "zh-CN",
-              options: {
-                "zh-CN": t("ui.simplified_chinese"),
-                en: t("ui.english"),
-              },
+              options: Object.fromEntries(
+                SUPPORTED_TARGET_LANGUAGES.map((language) => [
+                  language,
+                  targetLanguageLabel(language),
+                ]),
+              ),
             },
           },
         ],
@@ -277,7 +286,7 @@ export class RssReaderSettingTab extends PluginSettingTab {
         refreshReader = true;
         break;
       case "targetLanguage":
-        if (value !== "zh-CN" && value !== "en") {
+        if (!isSupportedTargetLanguage(value)) {
           return;
         }
         if (this.plugin.settings.targetLanguage === value) {
@@ -675,4 +684,21 @@ function thresholdOrNull(value: string): number | null {
   return Number.isFinite(parsed)
     ? Math.max(0, Math.min(100, parsed))
     : null;
+}
+
+function targetLanguageLabel(language: TargetLanguage): string {
+  const labels: Record<TargetLanguage, string> = {
+    "zh-CN": t("ui.simplified_chinese"),
+    "zh-TW": t("ui.traditional_chinese"),
+    en: t("ui.english"),
+    ja: t("ui.japanese"),
+    ko: t("ui.korean"),
+    fr: t("ui.french"),
+    de: t("ui.german"),
+    es: t("ui.spanish"),
+    pt: t("ui.portuguese"),
+    it: t("ui.italian"),
+    ru: t("ui.russian"),
+  };
+  return `${labels[language]} (${language})`;
 }

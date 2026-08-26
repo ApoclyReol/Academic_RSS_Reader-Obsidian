@@ -737,11 +737,20 @@ export class RssRepository {
             THEN 'succeeded' ELSE excluded.status END,
           attempt_count=CASE
             WHEN translations.source_hash=excluded.source_hash
+              AND excluded.attempt_count=0
+            THEN 0
+            WHEN translations.source_hash=excluded.source_hash
             THEN translations.attempt_count ELSE 0 END,
           last_error=CASE
             WHEN translations.source_hash=excluded.source_hash
+              AND excluded.attempt_count=0
+            THEN excluded.last_error
+            WHEN translations.source_hash=excluded.source_hash
             THEN translations.last_error ELSE NULL END,
           translated_at=CASE
+            WHEN translations.source_hash=excluded.source_hash
+              AND excluded.attempt_count=0
+            THEN excluded.translated_at
             WHEN translations.source_hash=excluded.source_hash
             THEN translations.translated_at ELSE NULL END
         `,

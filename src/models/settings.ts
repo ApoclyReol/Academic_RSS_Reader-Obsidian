@@ -8,7 +8,7 @@ export interface RssReaderSettings {
   cardShowDoi: boolean;
   cardShowAbstract: boolean;
   cardShowGraphicalAbstract: boolean;
-  targetLanguage: string;
+  targetLanguage: TargetLanguage;
   googleTranslationDisclosureAccepted: boolean;
   llmBaseUrl: string;
   llmSecretId: string;
@@ -17,6 +17,22 @@ export interface RssReaderSettings {
   recommendationLowThreshold: number | null;
   recommendationHighThreshold: number | null;
 }
+
+export const SUPPORTED_TARGET_LANGUAGES = [
+  "zh-CN",
+  "zh-TW",
+  "en",
+  "ja",
+  "ko",
+  "fr",
+  "de",
+  "es",
+  "pt",
+  "it",
+  "ru",
+] as const;
+
+export type TargetLanguage = (typeof SUPPORTED_TARGET_LANGUAGES)[number];
 
 export const DEFAULT_SETTINGS: RssReaderSettings = {
   dataDirectory: "",
@@ -59,5 +75,17 @@ export function normalizeSettings(
       normalized[key] = DEFAULT_SETTINGS[key];
     }
   }
+  if (!isSupportedTargetLanguage(stored.targetLanguage)) {
+    normalized.targetLanguage = DEFAULT_SETTINGS.targetLanguage;
+  }
   return normalized;
+}
+
+export function isSupportedTargetLanguage(
+  value: unknown,
+): value is TargetLanguage {
+  return (
+    typeof value === "string" &&
+    (SUPPORTED_TARGET_LANGUAGES as readonly string[]).includes(value)
+  );
 }
