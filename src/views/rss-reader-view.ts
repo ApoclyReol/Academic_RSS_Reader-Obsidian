@@ -19,6 +19,7 @@ import {
   type Feed,
   type FeedInput,
   type ItemQuery,
+  type ItemSort,
   type ItemStatus,
   type RssItem,
   type TranslationStatus,
@@ -58,6 +59,7 @@ const READER_BATCH_SIZE = 100;
 export class RssReaderView extends ItemView {
   private page: Page = "reader";
   private status: ItemStatus = "unread";
+  private itemSort: ItemSort = "relevance";
   private lastAction: LastAction | null = null;
   private translationEnabled = false;
   private titleObserver: IntersectionObserver | null = null;
@@ -311,6 +313,7 @@ export class RssReaderView extends ItemView {
 
     const query = {
       status: this.status,
+      sort: this.itemSort,
       query: "",
       feedIds: [],
       limit: READER_BATCH_SIZE,
@@ -336,6 +339,40 @@ export class RssReaderView extends ItemView {
       async () => this.undoLastAction(),
       !this.lastAction,
     );
+    if (this.status === "unread") {
+      this.actionButton(
+        actions,
+        t("reader.hide_remaining_unread", {
+          count: counts.unread,
+        }),
+        "eye-off",
+        () => {
+          new ConfirmModal(
+            this.app,
+            t("reader.hide_remaining_unread_confirm", {
+              count: counts.unread,
+            }),
+            async () => {
+              const itemIds = await this.plugin.repository.moveAllItems(
+                "unread",
+                "hidden",
+              );
+              if (itemIds.length > 0) {
+                this.lastAction = {
+                  itemIds,
+                  fromStatus: "unread",
+                  label: t("reader.remaining_unread_papers", {
+                    count: itemIds.length,
+                  }),
+                };
+              }
+              await this.refresh();
+            },
+          ).open();
+        },
+        counts.unread === 0,
+      );
+    }
     const translateButton = this.actionButton(
       actions,
       this.translationEnabled ? t("ui.show_original") : t("ui.translate_titles"),
@@ -368,6 +405,7 @@ export class RssReaderView extends ItemView {
       String(this.translationEnabled),
     );
     this.updateTranslationRetryAction();
+    this.renderSortActions(actions);
 
     if (this.readerItems.length === 0) {
       container.createDiv({
@@ -420,7 +458,6 @@ export class RssReaderView extends ItemView {
     const footer = content.createDiv({
       cls: "rss-reader__item-footer",
     });
-    this.renderKeywordRelevance(footer, item);
     const actions = footer.createDiv({ cls: "rss-reader__item-actions" });
     this.renderStatusActions(actions, item);
     if (item.link) {
@@ -430,6 +467,7 @@ export class RssReaderView extends ItemView {
         }
       });
     }
+    this.renderKeywordRelevance(footer, item);
     renderItemImage(
       card,
       {
@@ -535,6 +573,33 @@ export class RssReaderView extends ItemView {
       total: formatNumber(this.readerMatched),
       shown: formatNumber(this.readerItems.length),
     });
+  }
+
+  private renderSortActions(container: HTMLElement): void {
+    const group = container.createDiv({
+      cls: "rss-reader__sort-actions",
+      attr: {
+        role: "group",
+        "aria-label": t("reader.sort_options"),
+      },
+    });
+    for (const [sort, label, icon] of [
+      ["title", t("reader.sort_by_title"), "arrow-down-a-z"],
+      ["updated", t("reader.sort_by_update_time"), "clock-3"],
+      ["journal", t("reader.sort_by_journal"), "book-open"],
+      ["relevance", t("reader.sort_by_relevance"), "sparkles"],
+    ] as Array<[ItemSort, string, string]>) {
+      const active = this.itemSort === sort;
+      const button = this.actionButton(group, label, icon, async () => {
+        if (this.itemSort === sort) {
+          return;
+        }
+        this.itemSort = sort;
+        await this.refresh();
+      });
+      button.toggleClass("is-active", active);
+      button.setAttribute("aria-pressed", String(active));
+    }
   }
 
   private renderTitle(container: HTMLElement, item: RssItem): void {

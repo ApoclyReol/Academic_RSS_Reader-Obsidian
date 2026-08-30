@@ -15,6 +15,7 @@ import {
   CREATE_SCHEMA_SQL,
   SCHEMA_MIGRATIONS,
 } from "../src/database/schema";
+import type { ItemSort } from "../src/models/domain";
 import { RssRepository } from "../src/repositories/rss-repository";
 import {
   parseFeed,
@@ -517,6 +518,158 @@ describe("database and repository", () => {
     expect(repository.countByStatus().hidden).toBe(1);
     await repository.setItemStatus(stored.insertedIds, "unread");
     expect(repository.countByStatus().unread).toBe(1);
+  });
+
+  it("moves every remaining item between baskets and returns a complete undo set", async () => {
+    const feedId = await repository.addFeed({
+      name: "Batch decisions",
+      url: "https://example.com/batch-decisions",
+      enabled: true,
+    });
+    const stored = await repository.upsertParsedItems(
+      feedId,
+      Array.from({ length: 4 }, (_, index) => ({
+        stableGuid: `batch-decision-${index}`,
+        title: `Batch decision ${index}`,
+        titleNorm: `batch decision ${index}`,
+        authors: "Author",
+        journal: "Batch decisions",
+        year: "2026",
+        doi: "",
+        link: "",
+        pubDate: "",
+        summary: "",
+      })),
+    );
+    const interestedId = stored.insertedIds[0]!;
+    await repository.setItemStatus([interestedId], "interested");
+
+    const movedIds = await repository.moveAllItems("unread", "hidden");
+
+    expect(movedIds).toEqual(stored.insertedIds.slice(1));
+    expect(repository.countByStatus()).toMatchObject({
+      unread: 0,
+      interested: 1,
+      hidden: 3,
+    });
+    expect(
+      await repository.setItemStatus(
+        [...movedIds, movedIds[0]!],
+        "unread",
+      ),
+    ).toBe(3);
+    expect(repository.countByStatus()).toMatchObject({
+      unread: 3,
+      interested: 1,
+      hidden: 0,
+    });
+  });
+
+  it("sorts reader baskets by title, update time, journal or relevance", async () => {
+    const feedId = await repository.addFeed({
+      name: "Sort feed",
+      url: "https://example.com/sort",
+      enabled: true,
+    });
+    const stored = await repository.upsertParsedItems(feedId, [
+      {
+        stableGuid: "sort-zulu",
+        title: "Zulu",
+        titleNorm: "zulu",
+        authors: "Author",
+        journal: "Alpha journal",
+        articleJournal: "Alpha journal",
+        year: "2026",
+        doi: "",
+        link: "",
+        pubDate: "",
+        summary: "",
+      },
+      {
+        stableGuid: "sort-alpha",
+        title: "Alpha",
+        titleNorm: "alpha",
+        authors: "Author",
+        journal: "Zulu journal",
+        articleJournal: "Zulu journal",
+        year: "2026",
+        doi: "",
+        link: "",
+        pubDate: "",
+        summary: "",
+      },
+      {
+        stableGuid: "sort-middle",
+        title: "Middle",
+        titleNorm: "middle",
+        authors: "Author",
+        journal: "Middle journal",
+        articleJournal: "Middle journal",
+        year: "2026",
+        doi: "",
+        link: "",
+        pubDate: "",
+        summary: "",
+      },
+    ]);
+    await database.write((db) => {
+      for (const [itemId, lastSeenAt] of [
+        [stored.insertedIds[0]!, "2026-01-01T00:00:00.000Z"],
+        [stored.insertedIds[1]!, "2026-02-01T00:00:00.000Z"],
+        [stored.insertedIds[2]!, "2026-03-01T00:00:00.000Z"],
+      ] as Array<[number, string]>) {
+        db.run(
+          "UPDATE items SET last_seen_at=$lastSeenAt WHERE id=$itemId",
+          {
+            $itemId: itemId,
+            $lastSeenAt: lastSeenAt,
+          },
+        );
+      }
+    });
+    await repository.replaceRecommendationResults({
+      modelVersion: "sort-model",
+      positiveCount: 2,
+      negativeCount: 2,
+      unreadCount: 3,
+      errorMessage: null,
+      keywords: [],
+      scores: [
+        {
+          itemId: stored.insertedIds[0]!,
+          score: 60,
+          tier: "pending",
+          matchedKeywords: "[]",
+          contentHash: "sort-zulu",
+        },
+        {
+          itemId: stored.insertedIds[1]!,
+          score: 10,
+          tier: "low",
+          matchedKeywords: "[]",
+          contentHash: "sort-alpha",
+        },
+        {
+          itemId: stored.insertedIds[2]!,
+          score: 90,
+          tier: "high",
+          matchedKeywords: "[]",
+          contentHash: "sort-middle",
+        },
+      ],
+    });
+    const titles = (sort?: ItemSort): string[] =>
+      repository.listItems({
+        status: "unread",
+        sort,
+        limit: 10,
+      }).map((item) => item.title);
+
+    expect(titles("title")).toEqual(["Alpha", "Middle", "Zulu"]);
+    expect(titles("updated")).toEqual(["Middle", "Alpha", "Zulu"]);
+    expect(titles("journal")).toEqual(["Zulu", "Middle", "Alpha"]);
+    expect(titles("relevance")).toEqual(["Middle", "Zulu", "Alpha"]);
+    expect(titles()).toEqual(titles("relevance"));
   });
 
   it("deduplicates by stable GUID and records feed association", async () => {

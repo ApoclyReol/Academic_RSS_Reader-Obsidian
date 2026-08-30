@@ -9,7 +9,7 @@ Academic RSS Reader is a desktop Obsidian plugin for the first pass of academic 
 The plugin focuses on the step between “new papers arrived” and “I know what deserves a closer read”. It is designed to reduce repetitive triage, not to replace a reference manager or a full-text database.
 
 > [!IMPORTANT]
-> Current recommended version: **1.6.1**. This version requires Obsidian **1.13.0 or later** and is desktop-only. Its bundled runtime must also provide Node.js **22.16 or later**, `node:sqlite` `DatabaseSync`, and the SQLite Backup API. Update Obsidian before installing or updating when possible.
+> Current recommended version: **1.6.2**. This version requires Obsidian **1.13.0 or later** and is desktop-only. Its bundled runtime must also provide Node.js **22.16 or later**, `node:sqlite` `DatabaseSync`, and the SQLite Backup API. Update Obsidian before installing or updating when possible.
 
 ## Why use Academic RSS Reader
 
@@ -64,6 +64,8 @@ Academic RSS Reader is a good fit if you:
 - Manage papers as **Unread**, **Interested**, **Archived**, **Hidden**, or **Expired**.
 - Load long lists continuously in batches of 100 instead of rendering the whole database at once.
 - Choose whether cards show the journal, authors, publication date, DOI, feed-provided text abstract, and graphical abstract. Titles, relevance, and actions always remain visible.
+- Sort any basket by title, last-seen update time, journal, or relevance.
+- After marking the papers you want as interested, hide every remaining unread paper in one confirmed action and undo the full batch when needed.
 - Open the original paper in the system browser.
 - Undo the most recent status action during the current reader session.
 
@@ -155,6 +157,7 @@ The plugin does not create or open a database during startup. Database creation 
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [Security and privacy](SECURITY.md)
 - [Changelog](CHANGELOG.md)
+- [v1.6.2 release notes](docs/V1_6_2_RELEASE.md)
 - [v1.6.1 release notes](docs/V1_6_1_RELEASE.md)
 - [v1.6.0 release notes](docs/V1_6_0_RELEASE.md)
 - [v1.5.0 release notes](docs/V1_5_0_RELEASE.md)

@@ -80,4 +80,18 @@ describe("UI localization", () => {
       "Expired",
     ]);
   });
+
+  it("localizes the unread batch action and reader sorting controls", () => {
+    setUiLanguage("zh-CN");
+    expect(t("reader.hide_remaining_unread", { count: 12 }))
+      .toBe("隐藏剩余未读（12）");
+    expect(t("reader.sort_by_update_time")).toBe("按更新时间");
+
+    setUiLanguage("en");
+    expect(t("reader.hide_remaining_unread_confirm", { count: 12 }))
+      .toBe(
+        "Hide the remaining 12 unread papers? You can undo this action.",
+      );
+    expect(t("reader.sort_by_relevance")).toBe("Sort by relevance");
+  });
 });

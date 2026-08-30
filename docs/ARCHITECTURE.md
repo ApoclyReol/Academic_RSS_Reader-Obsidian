@@ -1,6 +1,6 @@
 # 架构设计
 
-本文面向维护者，描述 Academic RSS Reader v1.6.1 的当前运行架构。代码、测试和
+本文面向维护者，描述 Academic RSS Reader v1.6.2 的当前运行架构。代码、测试和
 `src/database/schema.ts` 是最终事实源。
 
 ## 总览

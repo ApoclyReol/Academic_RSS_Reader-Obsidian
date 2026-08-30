@@ -7,6 +7,7 @@ export const ITEM_STATUSES = [
 ] as const;
 
 export type ItemStatus = (typeof ITEM_STATUSES)[number];
+export type ItemSort = "title" | "updated" | "journal" | "relevance";
 export type RecommendationTier = "high" | "pending" | "low";
 export type TranslationField = "title" | "abstract";
 export type TranslationStatus =
@@ -87,6 +88,7 @@ export interface ParsedItem {
 
 export interface ItemQuery {
   status: ItemStatus;
+  sort?: ItemSort;
   query?: string;
   feedIds?: number[];
   limit?: number;

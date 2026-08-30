@@ -33,7 +33,7 @@ function textValue(value: SqlValue, fallback = ""): string {
     : fallback;
 }
 
-const ITEM_JOURNAL_SELECT = `
+const ITEM_JOURNAL_VALUE = `
   COALESCE(
     NULLIF(i.article_journal,''),
     (
@@ -44,7 +44,10 @@ const ITEM_JOURNAL_SELECT = `
       LIMIT 1
     ),
     ''
-  ) AS journal,
+  )`;
+
+const ITEM_JOURNAL_SELECT = `
+  ${ITEM_JOURNAL_VALUE} AS journal,
   COALESCE((SELECT GROUP_CONCAT(f.name,' ')
     FROM item_feeds x JOIN feeds f ON f.id=x.feed_id
     WHERE x.item_id=i.id),'') AS feed_names`;
@@ -90,6 +93,35 @@ function statusPriority(status: ItemStatus): number {
     expired: 2,
     unread: 1,
   }[status];
+}
+
+const ITEM_STATUS_BATCH_SIZE = 500;
+
+function itemOrderBy(sort: ItemQuery["sort"]): string {
+  switch (sort ?? "relevance") {
+    case "title":
+      return "i.title COLLATE NOCASE ASC, i.id DESC";
+    case "updated":
+      return `
+        i.last_seen_at DESC,
+        COALESCE(i.pub_date,i.first_seen_at) DESC,
+        i.id DESC
+      `;
+    case "journal":
+      return `
+        ${ITEM_JOURNAL_VALUE} COLLATE NOCASE ASC,
+        i.title COLLATE NOCASE ASC,
+        i.id DESC
+      `;
+    case "relevance":
+      return `
+        CASE rs.final_tier WHEN 'high' THEN 0 WHEN 'pending' THEN 1
+          WHEN 'low' THEN 3 ELSE 2 END,
+        COALESCE(rs.keyword_score,-1) DESC,
+        COALESCE(i.pub_date,i.first_seen_at) DESC,
+        i.id DESC
+      `;
+  }
 }
 
 export class RssRepository {
@@ -540,6 +572,7 @@ export class RssRepository {
     params.$translationTarget = query.targetLanguage ?? "zh-CN";
     const limit = Math.max(1, Math.min(query.limit ?? 100, 500));
     const offset = Math.max(0, Math.floor(query.offset ?? 0));
+    const orderBy = itemOrderBy(query.sort);
     return this.database
       .query<Row>(
         `
@@ -557,12 +590,7 @@ export class RssRepository {
           ON ta.item_id=i.id AND ta.field='abstract'
           AND ta.target_language=$translationTarget
         ${where}
-        ORDER BY
-          CASE rs.final_tier WHEN 'high' THEN 0 WHEN 'pending' THEN 1
-            WHEN 'low' THEN 3 ELSE 2 END,
-          COALESCE(rs.keyword_score,-1) DESC,
-          COALESCE(i.pub_date,i.first_seen_at) DESC,
-          i.id DESC
+        ORDER BY ${orderBy}
         LIMIT ${limit} OFFSET ${offset}
         `,
         params,
@@ -628,18 +656,65 @@ export class RssRepository {
     if (itemIds.length === 0) {
       return 0;
     }
+    const uniqueItemIds = [...new Set(itemIds)];
     return this.database.write((db) => {
-      const placeholders = itemIds.map((_, index) => `$id${index}`).join(",");
+      let changed = 0;
+      for (
+        let offset = 0;
+        offset < uniqueItemIds.length;
+        offset += ITEM_STATUS_BATCH_SIZE
+      ) {
+        const batch = uniqueItemIds.slice(
+          offset,
+          offset + ITEM_STATUS_BATCH_SIZE,
+        );
+        const placeholders = batch
+          .map((_, index) => `$id${index}`)
+          .join(",");
+        db.run(
+          `UPDATE items SET item_status=$status WHERE id IN (${placeholders})`,
+          {
+            $status: status,
+            ...Object.fromEntries(
+              batch.map((id, index) => [`$id${index}`, id]),
+            ),
+          },
+        );
+        changed += db.getRowsModified();
+      }
+      return changed;
+    });
+  }
+
+  async moveAllItems(
+    fromStatus: ItemStatus,
+    status: ItemStatus,
+  ): Promise<number[]> {
+    if (fromStatus === status) {
+      return [];
+    }
+    return this.database.write((db) => {
+      const itemIds = db.prepare(
+        `
+        SELECT id FROM items
+        WHERE item_status=$fromStatus
+        ORDER BY id
+        `,
+      ).all({ $fromStatus: fromStatus }).map((row) => Number(row.id));
+      if (itemIds.length === 0) {
+        return [];
+      }
       db.run(
-        `UPDATE items SET item_status=$status WHERE id IN (${placeholders})`,
+        `
+        UPDATE items SET item_status=$status
+        WHERE item_status=$fromStatus
+        `,
         {
+          $fromStatus: fromStatus,
           $status: status,
-          ...Object.fromEntries(
-            itemIds.map((id, index) => [`$id${index}`, id]),
-          ),
         },
       );
-      return db.getRowsModified();
+      return itemIds;
     });
   }
 

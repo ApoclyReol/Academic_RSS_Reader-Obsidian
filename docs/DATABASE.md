@@ -1,6 +1,6 @@
 # 数据库设计
 
-本文描述 Academic RSS Reader v1.6.1 的有效 schema 5。schema 事实源为
+本文描述 Academic RSS Reader v1.6.2 的有效 schema 5。schema 事实源为
 `src/database/schema.ts`，业务 SQL 事实源为 `src/repositories/rss-repository.ts`。
 
 ## 存储位置与运行参数
@@ -113,6 +113,14 @@ erDiagram
 `item_status` 的领域值为 `unread`、`interested`、`archived`、`hidden`、`expired`。
 `article_journal` 只保存 RSS 明确提供的文章级期刊，不保存订阅默认值。
 
+身份字段有意并存，不是同一值的重复副本：
+
+- `stable_guid` 是入库后保持稳定的内部身份；命中兼容候选时保留旧值，避免阅读状态和关联断裂。
+- `doi` 是最强的出版物身份候选；`link` 保留可打开的原文地址，并参与旧记录兼容查找。
+- `title_norm` 是规范化后的标题，只用于查找和弱身份候选；展示始终使用原始 `title`。
+- `year` 是可独立提取的粗粒度身份字段；`pub_date` 是用于展示和排序的完整发布日期。RSS
+  只提供年份或完整日期无法解析时，仍需保留 `year`。
+
 展示期刊在查询时派生：
 
 1. 文章级 `article_journal`；
@@ -121,6 +129,13 @@ erDiagram
 
 卡片始终只显示一个期刊名。订阅更新提供新的非空文章级期刊时会刷新
 `article_journal`；空值不会覆盖已有文章级期刊。
+
+`items.first_seen_at` 和 `items.last_seen_at` 是文献跨全部订阅的全局观察时间，用于列表排序、
+隐藏文献过期和身份兼容整理；`item_feeds` 中的同名字段记录每个订阅各自的观察时间。全局值
+通常分别对应关联记录的最早和最晚时间，但二者服务于不同查询层级，不能只保留其中一组。
+
+`image_url` 只保存 RSS item 提供的可空 HTTP(S) 图片地址。没有图片的文章保持 `NULL`；
+空值不代表字段失效，后续订阅更新仍可补充图片。
 
 ### `item_feeds`
 
@@ -135,23 +150,33 @@ erDiagram
 
 每篇文献最多一条当前推荐结果，主键和外键均为 `item_id`。
 
-- 本地模型：`keyword_score`, `keyword_tier`, `matched_keywords`。
-- 最终结果：`final_tier`。
-- LLM 覆盖：`llm_tier`, `llm_error`, `llm_reviewed_at`。
+- 本地模型：`keyword_score` 是连续分数，`keyword_tier` 是按阈值产生的分层，
+  `matched_keywords` 是用于解释结果的关键词快照。
+- LLM 覆盖：`llm_tier` 只记录待判断层的复核结果，`llm_error` 和 `llm_reviewed_at`
+  记录复核状态。
+- 最终结果：`final_tier` 等于有效的 LLM 覆盖，否则回退到 `keyword_tier`。虽然可以在读取时
+  派生，但数据库将其物化并建立索引，以统一阅读器筛选和批量操作查询。
 - 可追溯性：`model_version`, `content_hash`, `scored_at`。
 
 重新进行本地评分会清除旧 LLM 覆盖，避免基于旧内容的 LLM 结果继续生效。
+`content_hash` 用于判断文章内容是否变化，`model_version` 和 `scored_at` 用于定位产生当前
+结果的模型与评分时间，因此不应从当前模型或文章内容临时反推。
 
 ### `recommendation_keywords`
 
 当前模型的词项、IDF、自动权重和正负样本出现数。主键为 `keyword`。
 
 `is_disabled` 是当前唯一人工控制字段。`manual_direction` 和 `manual_weight` 仅为旧 schema
-兼容保留，推荐计算不读取它们。
+兼容保留，推荐计算不读取它们，新功能也不得重新赋予这两个字段业务含义。它们可以在未来
+提高 schema 版本并完成迁移验证后删除。
 
 完整字段为 `keyword`、`auto_weight`、`positive_count`、`negative_count`、
 `manual_direction`、`manual_weight`、`is_disabled`、`model_version`、`updated_at` 和
 `idf`。模型替换时删除未停用的旧词项，保留人工停用项。
+
+`model_version` 记录生成或最后刷新词项的模型版本；`updated_at` 在自动权重刷新或人工停用
+状态改变时更新。二者当前不参与打分，但用于追踪词项来源和维护动作。`idf`、自动权重与
+正负样本计数属于当前模型词表，不能因为没有直接显示在界面中而视为冗余。
 
 ### `recommendation_models`
 
@@ -178,6 +203,11 @@ erDiagram
 其他字段包括 `source_text`、`translated_text`、`source_language`、`provider`、
 `attempt_count`、`last_error` 和 `translated_at`。
 
+`source_text` 保存创建或刷新翻译任务时的源文本快照，不能简单地用文章当前标题或摘要替代；
+`source_hash` 用于比较源版本。`source_language`、`provider` 和 `translated_at` 是翻译来源
+与完成时间的追溯信息，即使当前只配置一个提供方也继续保留。`attempt_count` 与
+`last_error` 用于失败重试和问题诊断。
+
 数据库打开时会把遗留的 `translating` 重置为 `pending`，由 Translation Service 恢复队列。
 
 ### `app_metadata`
@@ -191,7 +221,7 @@ erDiagram
 
 ### `schema_migrations`
 
-记录已应用 schema 版本和时间。当前最新版本为 4。`PRAGMA user_version` 同步写入，但迁移
+记录已应用 schema 版本和时间。当前最新版本为 5。`PRAGMA user_version` 同步写入，但迁移
 判断以 `schema_migrations` 为主。
 
 ## 索引
@@ -207,6 +237,11 @@ erDiagram
 | `idx_item_feeds_feed` | 按订阅查询文献 |
 | `idx_recommendation_scores_tier` | 推荐层级过滤 |
 | `idx_translations_status` | 恢复待处理翻译任务 |
+
+`idx_items_identity_fallback` 是
+`idx_items_identity_fallback_journal` 的三字段前缀，也是已发布 schema 4 的迁移产物。
+schema 5 暂时保留二者不代表它们必须永久并存；只有在真实查询上完成
+`EXPLAIN QUERY PLAN`、读写基准和身份兼容回归测试后，才可通过新 migration 删除前者。
 
 新增高频查询前先检查现有索引；索引变化必须通过 migration 追加。
 

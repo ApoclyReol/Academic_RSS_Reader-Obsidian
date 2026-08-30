@@ -19,6 +19,8 @@
 ## 发布文档
 
 - [版本记录](../CHANGELOG.md)
+- [v1.6.2 中文发布说明](V1_6_2_RELEASE.zh-CN.md)
+- [v1.6.2 English release notes](V1_6_2_RELEASE.md)
 - [v1.6.1 中文发布说明](V1_6_1_RELEASE.zh-CN.md)
 - [v1.6.1 English release notes](V1_6_1_RELEASE.md)
 - [v1.6.0 中文发布说明](V1_6_0_RELEASE.zh-CN.md)
