@@ -113,6 +113,7 @@ export const zhCN = {
   "ui.there_are_no_papers_in_this_basket": "这个篮子里当前没有文献。",
   "ui.open_original": "打开原文",
   "ui.all_papers_loaded": "已加载全部文献",
+  "ui.back_to_top": "返回顶部",
   "ui.scroll_down_to_load_more": "继续向下滚动以加载更多",
   "ui.loading_more_papers": "正在加载更多文献……",
   "ui.translation_failed": "翻译失败",

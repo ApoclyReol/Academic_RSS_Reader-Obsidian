@@ -113,6 +113,7 @@ export const en = {
   "ui.there_are_no_papers_in_this_basket": "There are no papers in this basket.",
   "ui.open_original": "Open original",
   "ui.all_papers_loaded": "All papers loaded",
+  "ui.back_to_top": "Back to top",
   "ui.scroll_down_to_load_more": "Scroll down to load more",
   "ui.loading_more_papers": "Loading more papers…",
   "ui.translation_failed": "Translation failed",

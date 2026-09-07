@@ -15,3 +15,10 @@ export function restoreScrollTop(
   }
   container.scrollTop = scrollTop;
 }
+
+export function scrollToTop(container: ScrollContainer | null | undefined): void {
+  if (!container) {
+    return;
+  }
+  container.scrollTop = 0;
+}

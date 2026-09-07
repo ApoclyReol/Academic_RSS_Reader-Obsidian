@@ -28,7 +28,11 @@ import { statusLabel } from "./status-label";
 import { executeUiAction } from "./ui-action";
 import { recommendationExplanation } from "./recommendation-explanation";
 import { renderItemImage } from "./item-image";
-import { captureScrollTop, restoreScrollTop } from "./scroll-position";
+import {
+  captureScrollTop,
+  restoreScrollTop,
+  scrollToTop,
+} from "./scroll-position";
 import {
   renderCardLabeledField,
   renderCardMetadata,
@@ -74,6 +78,7 @@ export class RssReaderView extends ItemView {
   private readerList: HTMLElement | null = null;
   private readerCaption: HTMLElement | null = null;
   private readerSentinel: HTMLElement | null = null;
+  private readerBackToTopButton: HTMLButtonElement | null = null;
   private readerModeActions: HTMLElement | null = null;
   private translationRetryButton: HTMLButtonElement | null = null;
   private loadingMore = false;
@@ -110,6 +115,7 @@ export class RssReaderView extends ItemView {
     this.viewActive = false;
     this.titleObserver?.disconnect();
     this.loadMoreObserver?.disconnect();
+    this.readerBackToTopButton = null;
   }
 
   async refresh(options: RefreshOptions = {}): Promise<void> {
@@ -133,6 +139,7 @@ export class RssReaderView extends ItemView {
       this.readerList = null;
       this.readerCaption = null;
       this.readerSentinel = null;
+      this.readerBackToTopButton = null;
       this.readerModeActions = null;
       this.translationRetryButton = null;
       this.loadingMore = false;
@@ -499,6 +506,7 @@ export class RssReaderView extends ItemView {
       },
     });
     if (this.readerItems.length >= this.readerMatched) {
+      this.renderBackToTopAction(container);
       return;
     }
     const IntersectionObserverConstructor =
@@ -559,6 +567,10 @@ export class RssReaderView extends ItemView {
       ) {
         this.loadMoreObserver?.disconnect();
         this.readerSentinel.setText(t("ui.all_papers_loaded"));
+        const container = this.readerSentinel.parentElement;
+        if (container?.instanceOf(HTMLElement)) {
+          this.renderBackToTopAction(container);
+        }
       } else {
         this.readerSentinel.setText(t("ui.scroll_down_to_load_more"));
       }
@@ -573,6 +585,26 @@ export class RssReaderView extends ItemView {
       total: formatNumber(this.readerMatched),
       shown: formatNumber(this.readerItems.length),
     });
+  }
+
+  private renderBackToTopAction(container: HTMLElement): void {
+    if (this.readerBackToTopButton?.isConnected) {
+      return;
+    }
+    const actions = container.createDiv({
+      cls: "rss-reader__end-actions",
+    });
+    this.readerBackToTopButton = this.actionButton(
+      actions,
+      t("ui.back_to_top"),
+      "arrow-up",
+      () => scrollToTop(this.readerScrollContainer()),
+    );
+    this.readerBackToTopButton.addClass("rss-reader__back-to-top");
+    this.readerBackToTopButton.setAttribute(
+      "aria-label",
+      t("ui.back_to_top"),
+    );
   }
 
   private renderSortActions(container: HTMLElement): void {
@@ -866,11 +898,12 @@ export class RssReaderView extends ItemView {
   }
 
   private readerScrollTop(): number | undefined {
+    return captureScrollTop(this.readerScrollContainer());
+  }
+
+  private readerScrollContainer(): HTMLElement | null {
     const container = this.containerEl.children[1];
-    if (!container?.instanceOf(HTMLElement)) {
-      return undefined;
-    }
-    return captureScrollTop(container);
+    return container?.instanceOf(HTMLElement) ? container : null;
   }
 
   private renderRecommendation(container: HTMLElement): void {

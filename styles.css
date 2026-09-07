@@ -490,6 +490,16 @@
   text-align: center;
 }
 
+.rss-reader__end-actions {
+  display: flex;
+  justify-content: center;
+  margin: var(--size-4-4) 0 var(--size-4-6);
+}
+
+.rss-reader__back-to-top {
+  justify-content: center;
+}
+
 .rss-reader__translation-status.is-error,
 .rss-reader__warning {
   color: var(--text-error);

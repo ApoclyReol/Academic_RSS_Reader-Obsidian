@@ -1,7 +1,11 @@
 import { Window as HappyWindow } from "happy-dom";
 import { describe, expect, it } from "vitest";
 
-import { captureScrollTop, restoreScrollTop } from "../src/views/scroll-position";
+import {
+  captureScrollTop,
+  restoreScrollTop,
+  scrollToTop,
+} from "../src/views/scroll-position";
 
 describe("reader scroll position", () => {
   it("captures and restores the scroll offset across a list redraw", () => {
@@ -24,5 +28,15 @@ describe("reader scroll position", () => {
     restoreScrollTop(container, undefined);
 
     expect(container.scrollTop).toBe(128);
+  });
+
+  it("moves the reader back to the top", () => {
+    const window = new HappyWindow();
+    const container = window.document.body;
+    container.scrollTop = 512;
+
+    scrollToTop(container);
+
+    expect(container.scrollTop).toBe(0);
   });
 });
