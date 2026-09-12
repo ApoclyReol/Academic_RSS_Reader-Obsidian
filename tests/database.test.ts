@@ -672,6 +672,113 @@ describe("database and repository", () => {
     expect(titles()).toEqual(titles("relevance"));
   });
 
+  it("matches fuzzy search keywords across paper metadata", async () => {
+    const feedId = await repository.addFeed({
+      name: "Cognitive feed",
+      journalName: "Cognitive journal",
+      url: "https://example.com/cognitive",
+      enabled: true,
+    });
+    await repository.upsertParsedItems(feedId, [
+      {
+        stableGuid: "fuzzy-human-computer",
+        title: "Human-Computer Interaction",
+        titleNorm: "humancomputerinteraction",
+        authors: "Alice Chen",
+        journal: "Digital Library Studies",
+        articleJournal: "Digital Library Studies",
+        year: "2026",
+        doi: "10.1000/hci",
+        link: "https://example.com/hci",
+        pubDate: "",
+        summary: "Adaptive interfaces for knowledge workers",
+      },
+      {
+        stableGuid: "fuzzy-computer-vision",
+        title: "Computer vision",
+        titleNorm: "computervision",
+        authors: "Bob Chen",
+        journal: "Vision journal",
+        articleJournal: "Vision journal",
+        year: "2026",
+        doi: "10.1000/vision",
+        link: "https://example.com/vision",
+        pubDate: "",
+        summary: "Image recognition systems",
+      },
+    ]);
+
+    const searchableItems = repository.listItems({
+      status: "unread",
+      limit: 10,
+    });
+    const humanItem = searchableItems.find(
+      (item) => item.stableGuid === "fuzzy-human-computer",
+    );
+    const visionItem = searchableItems.find(
+      (item) => item.stableGuid === "fuzzy-computer-vision",
+    );
+    if (!humanItem || !visionItem) {
+      throw new Error("Expected fuzzy-search fixtures to be available");
+    }
+    await repository.upsertTranslationTask({
+      itemId: humanItem.id,
+      field: "title",
+      sourceText: humanItem.title,
+      translatedText: "Knowledge collaboration patterns",
+      sourceLanguage: "en",
+      targetLanguage: "en",
+      provider: "google-web",
+      sourceHash: "translated-human-title",
+      status: "succeeded",
+      attemptCount: 1,
+      lastError: null,
+      translatedAt: 1,
+    });
+    await repository.upsertTranslationTask({
+      itemId: visionItem.id,
+      field: "abstract",
+      sourceText: visionItem.summary,
+      translatedText: "Resilient image recognition systems",
+      sourceLanguage: "en",
+      targetLanguage: "en",
+      provider: "google-web",
+      sourceHash: "translated-vision-abstract",
+      status: "succeeded",
+      attemptCount: 1,
+      lastError: null,
+      translatedAt: 1,
+    });
+
+    const titles = (query: string, targetLanguage?: string): string[] =>
+      repository.listItems({
+        status: "unread",
+        query,
+        limit: 10,
+        targetLanguage,
+      }).map((item) => item.title);
+
+    expect(titles("human library")).toEqual(["Human-Computer Interaction"]);
+    expect(titles("human-computer")).toEqual(["Human-Computer Interaction"]);
+    expect(titles("interaction adaptive")).toEqual([
+      "Human-Computer Interaction",
+    ]);
+    expect(titles("human vision")).toEqual([]);
+    expect(titles("collaboration", "en")).toEqual([
+      "Human-Computer Interaction",
+    ]);
+    expect(titles("resilient", "en")).toEqual(["Computer vision"]);
+    expect(repository.countItems({
+      status: "unread",
+      query: "HUMAN LIBRARY",
+    })).toBe(1);
+    expect(repository.countItems({
+      status: "unread",
+      query: "COLLABORATION",
+      targetLanguage: "en",
+    })).toBe(1);
+  });
+
   it("deduplicates by stable GUID and records feed association", async () => {
     const feedId = await repository.addFeed({
       name: "Journal",

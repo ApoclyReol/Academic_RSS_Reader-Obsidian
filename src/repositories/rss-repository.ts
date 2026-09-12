@@ -124,6 +124,16 @@ function itemOrderBy(sort: ItemQuery["sort"]): string {
   }
 }
 
+function searchTerms(value: string | undefined): string[] {
+  const terms = value?.normalize("NFKC").toLocaleLowerCase()
+    .match(/[\p{L}\p{N}]+/gu) ?? [];
+  return [...new Set(terms)];
+}
+
+function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, "\\$&");
+}
+
 export class RssRepository {
   constructor(private readonly database: RssDatabase) {}
 
@@ -569,7 +579,6 @@ export class RssRepository {
 
   listItems(query: ItemQuery): RssItem[] {
     const { where, params } = this.itemWhere(query);
-    params.$translationTarget = query.targetLanguage ?? "zh-CN";
     const limit = Math.max(1, Math.min(query.limit ?? 100, 500));
     const offset = Math.max(0, Math.floor(query.offset ?? 0));
     const orderBy = itemOrderBy(query.sort);
@@ -1279,21 +1288,39 @@ export class RssRepository {
     params: Record<string, unknown>;
   } {
     const conditions = ["i.item_status=$status"];
-    const params: Record<string, unknown> = { $status: query.status };
-    const normalizedQuery = query.query?.trim().toLocaleLowerCase();
-    if (normalizedQuery) {
-      conditions.push(`
-        (
-          LOWER(i.title) LIKE $query OR LOWER(COALESCE(i.authors,'')) LIKE $query OR
-          LOWER(COALESCE(i.summary,'')) LIKE $query OR
-          LOWER(COALESCE(i.article_journal,'')) LIKE $query OR
-          LOWER(COALESCE((SELECT GROUP_CONCAT(DISTINCT f.journal_name)
-            FROM item_feeds x JOIN feeds f ON f.id=x.feed_id
-            WHERE x.item_id=i.id),'')) LIKE $query OR
-          LOWER(COALESCE(i.doi,'')) LIKE $query
-        )
-      `);
-      params.$query = `%${normalizedQuery}%`;
+    const params: Record<string, unknown> = {
+      $status: query.status,
+      $translationTarget: query.targetLanguage ?? "zh-CN",
+    };
+    const searchableFields = [
+      "i.title_norm",
+      "LOWER(COALESCE(i.title,''))",
+      `LOWER(COALESCE((SELECT translated_text FROM translations
+        WHERE item_id=i.id AND field='title'
+          AND target_language=$translationTarget AND status='succeeded'),''))`,
+      "LOWER(COALESCE(i.authors,''))",
+      "LOWER(COALESCE(i.summary,''))",
+      `LOWER(COALESCE((SELECT translated_text FROM translations
+        WHERE item_id=i.id AND field='abstract'
+          AND target_language=$translationTarget AND status='succeeded'),''))`,
+      "LOWER(COALESCE(i.article_journal,''))",
+      `LOWER(${ITEM_JOURNAL_VALUE})`,
+      `LOWER(COALESCE((SELECT GROUP_CONCAT(DISTINCT f.name)
+        FROM item_feeds x JOIN feeds f ON f.id=x.feed_id
+        WHERE x.item_id=i.id),''))`,
+      "LOWER(COALESCE(i.year,''))",
+      "LOWER(COALESCE(i.doi,''))",
+      "LOWER(COALESCE(i.link,''))",
+    ];
+    const terms = searchTerms(query.query);
+    if (terms.length > 0) {
+      conditions.push(terms.map((term, index) => {
+        const parameter = `$query${index}`;
+        params[parameter] = `%${escapeLikePattern(term)}%`;
+        return `(${searchableFields.map((field) =>
+          `${field} LIKE ${parameter} ESCAPE '\\'`
+        ).join(" OR ")})`;
+      }).join(" AND "));
     }
     if (query.feedIds && query.feedIds.length > 0) {
       const placeholders = query.feedIds

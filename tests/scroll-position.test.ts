@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   captureScrollTop,
+  isScrollAtBottom,
   restoreScrollTop,
   scrollToTop,
 } from "../src/views/scroll-position";
@@ -38,5 +39,18 @@ describe("reader scroll position", () => {
     scrollToTop(container);
 
     expect(container.scrollTop).toBe(0);
+  });
+
+  it("detects when the reader has reached the scroll end", () => {
+    const window = new HappyWindow();
+    const container = window.document.body;
+    Object.defineProperties(container, {
+      clientHeight: { configurable: true, value: 600 },
+      scrollHeight: { configurable: true, value: 1600 },
+    });
+    container.scrollTop = 995;
+    expect(isScrollAtBottom(container)).toBe(false);
+    container.scrollTop = 1000;
+    expect(isScrollAtBottom(container)).toBe(true);
   });
 });

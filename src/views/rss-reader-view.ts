@@ -30,6 +30,7 @@ import { recommendationExplanation } from "./recommendation-explanation";
 import { renderItemImage } from "./item-image";
 import {
   captureScrollTop,
+  isScrollAtBottom,
   restoreScrollTop,
   scrollToTop,
 } from "./scroll-position";
@@ -56,9 +57,20 @@ interface LastAction {
 
 interface RefreshOptions {
   preserveScrollTop?: number;
+  preserveSearchFocus?: boolean;
+  resetScrollTop?: boolean;
+}
+
+interface RecommendationModalCallbacks {
+  onChanged: () => void | Promise<void>;
+  onLowRecommendationsHidden: (
+    itemIds: number[],
+    changed: number,
+  ) => void | Promise<void>;
 }
 
 const READER_BATCH_SIZE = 100;
+const SEARCH_DEBOUNCE_MS = 300;
 
 export class RssReaderView extends ItemView {
   private page: Page = "reader";
@@ -73,13 +85,24 @@ export class RssReaderView extends ItemView {
   private mathJaxReady = false;
   private viewActive = false;
   private requestedTitleIds = new Set<string>();
+  private readerQuery = "";
+  private feedQuery = "";
+  private analyticsQuery = "";
   private readerItems: RssItem[] = [];
   private readerMatched = 0;
   private readerList: HTMLElement | null = null;
   private readerCaption: HTMLElement | null = null;
   private readerSentinel: HTMLElement | null = null;
   private readerBackToTopButton: HTMLButtonElement | null = null;
+  private readerBackToTopActions: HTMLElement | null = null;
   private readerModeActions: HTMLElement | null = null;
+  private readerSearchInput: HTMLInputElement | null = null;
+  private feedSearchInput: HTMLInputElement | null = null;
+  private analyticsSearchInput: HTMLInputElement | null = null;
+  private searchComposingInput: HTMLInputElement | null = null;
+  private readerScrollListenerContainer: HTMLElement | null = null;
+  private backToTopAnimation: Animation | null = null;
+  private searchRefreshTimer: number | null = null;
   private translationRetryButton: HTMLButtonElement | null = null;
   private loadingMore = false;
   private rendering = false;
@@ -115,7 +138,15 @@ export class RssReaderView extends ItemView {
     this.viewActive = false;
     this.titleObserver?.disconnect();
     this.loadMoreObserver?.disconnect();
+    this.clearSearchRefreshTimer();
+    this.backToTopAnimation?.cancel();
+    this.backToTopAnimation = null;
     this.readerBackToTopButton = null;
+    this.readerBackToTopActions = null;
+    this.readerSearchInput = null;
+    this.feedSearchInput = null;
+    this.analyticsSearchInput = null;
+    this.searchComposingInput = null;
   }
 
   async refresh(options: RefreshOptions = {}): Promise<void> {
@@ -140,6 +171,13 @@ export class RssReaderView extends ItemView {
       this.readerCaption = null;
       this.readerSentinel = null;
       this.readerBackToTopButton = null;
+      this.readerBackToTopActions = null;
+      this.readerSearchInput = null;
+      this.feedSearchInput = null;
+      this.analyticsSearchInput = null;
+      this.searchComposingInput = null;
+      this.backToTopAnimation?.cancel();
+      this.backToTopAnimation = null;
       this.readerModeActions = null;
       this.translationRetryButton = null;
       this.loadingMore = false;
@@ -149,6 +187,7 @@ export class RssReaderView extends ItemView {
       }
       container.empty();
       container.addClass("rss-reader");
+      this.registerReaderScrollListener(container);
       const cardLayout = cardLayoutOptions(this.plugin.settings);
       container.toggleClass(
         "rss-reader--card-metadata",
@@ -170,18 +209,21 @@ export class RssReaderView extends ItemView {
       );
       if (!this.plugin.isDatabaseReady()) {
         this.renderDatabaseSetup(container);
-        restoreScrollTop(container, preserveScrollTop);
+        this.restoreRefreshState(container, options, preserveScrollTop);
         return;
       }
-      this.renderHeader(container);
+      const stickyNavigation = container.createDiv({
+        cls: "rss-reader__sticky-navigation",
+      });
+      this.renderHeader(stickyNavigation);
       if (this.page === "reader") {
-        this.renderReader(container);
+        this.renderReader(container, stickyNavigation);
       } else if (this.page === "feeds") {
         this.renderFeeds(container);
       } else {
         this.renderAnalytics(container);
       }
-      restoreScrollTop(container, preserveScrollTop);
+      this.restoreRefreshState(container, options, preserveScrollTop);
     } finally {
       this.rendering = false;
       if (this.renderAgain) {
@@ -267,6 +309,7 @@ export class RssReaderView extends ItemView {
       setIcon(button.createSpan(), icon);
       button.createSpan({ text: label });
       button.addEventListener("click", () => {
+        this.clearSearchRefreshTimer();
         this.page = page;
         runUiAction(() => this.refresh(), button);
       });
@@ -296,9 +339,18 @@ export class RssReaderView extends ItemView {
     }
   }
 
-  private renderReader(container: HTMLElement): void {
+  private renderReader(
+    container: HTMLElement,
+    navigationContainer = container,
+  ): void {
     const counts = this.plugin.repository.countByStatus();
-    const baskets = container.createDiv({ cls: "rss-reader__baskets" });
+    const controls = navigationContainer.createDiv({
+      cls: "rss-reader__reader-controls",
+    });
+    this.renderSearch(controls);
+    const baskets = controls.createDiv({
+      cls: "rss-reader__baskets",
+    });
     for (const status of ITEM_STATUSES) {
       const button = baskets.createEl("button", {
         cls: this.status === status ? "rss-reader__basket is-active" : "rss-reader__basket",
@@ -309,19 +361,16 @@ export class RssReaderView extends ItemView {
       button.createSpan({ text: statusLabel(status) });
       button.createEl("strong", { text: String(counts[status]) });
       button.addEventListener("click", () => {
+        this.clearSearchRefreshTimer();
         this.status = status;
         runUiAction(() => this.refresh(), button);
       });
     }
 
-    if (this.status === "unread") {
-      this.renderRecommendation(container);
-    }
-
     const query = {
       status: this.status,
       sort: this.itemSort,
-      query: "",
+      query: this.readerQuery,
       feedIds: [],
       limit: READER_BATCH_SIZE,
       offset: 0,
@@ -338,48 +387,6 @@ export class RssReaderView extends ItemView {
       cls: "rss-reader__mode-switch",
     });
     this.readerModeActions = actions;
-    this.actionButton(actions, t("ui.refresh"), "refresh-cw", () => this.refresh());
-    this.actionButton(
-      actions,
-      t("ui.undo"),
-      "undo-2",
-      async () => this.undoLastAction(),
-      !this.lastAction,
-    );
-    if (this.status === "unread") {
-      this.actionButton(
-        actions,
-        t("reader.hide_remaining_unread", {
-          count: counts.unread,
-        }),
-        "eye-off",
-        () => {
-          new ConfirmModal(
-            this.app,
-            t("reader.hide_remaining_unread_confirm", {
-              count: counts.unread,
-            }),
-            async () => {
-              const itemIds = await this.plugin.repository.moveAllItems(
-                "unread",
-                "hidden",
-              );
-              if (itemIds.length > 0) {
-                this.lastAction = {
-                  itemIds,
-                  fromStatus: "unread",
-                  label: t("reader.remaining_unread_papers", {
-                    count: itemIds.length,
-                  }),
-                };
-              }
-              await this.refresh();
-            },
-          ).open();
-        },
-        counts.unread === 0,
-      );
-    }
     const translateButton = this.actionButton(
       actions,
       this.translationEnabled ? t("ui.show_original") : t("ui.translate_titles"),
@@ -414,6 +421,64 @@ export class RssReaderView extends ItemView {
     this.updateTranslationRetryAction();
     this.renderSortActions(actions);
 
+    const statusActions = actions.createDiv({
+      cls: "rss-reader__control-group rss-reader__status-actions",
+      attr: {
+        role: "group",
+        "aria-label": t("ui.actions"),
+      },
+    });
+    this.actionButton(
+      statusActions,
+      t("ui.undo"),
+      "undo-2",
+      async () => this.undoLastAction(),
+      !this.lastAction,
+    );
+    if (this.status === "unread") {
+      this.actionButton(
+        statusActions,
+        t("reader.hide_remaining_unread", {
+          count: counts.unread,
+        }),
+        "eye-off",
+        () => {
+          new ConfirmModal(
+            this.app,
+            t("reader.hide_remaining_unread_confirm", {
+              count: counts.unread,
+            }),
+            async () => {
+              const itemIds = await this.plugin.repository.moveAllItems(
+                "unread",
+                "hidden",
+              );
+              if (itemIds.length > 0) {
+                this.lastAction = {
+                  itemIds,
+                  fromStatus: "unread",
+                  label: t("reader.remaining_unread_papers", {
+                    count: itemIds.length,
+                  }),
+                };
+              }
+              await this.refresh();
+            },
+          ).open();
+        },
+        counts.unread === 0,
+      );
+    }
+    if (this.status === "unread") {
+      const recommendationButton = this.actionButton(
+        actions,
+        t("ui.personalized_recommendations"),
+        "sparkles",
+        () => this.openRecommendationModal(),
+      );
+      recommendationButton.setAttribute("aria-haspopup", "dialog");
+    }
+
     if (this.readerItems.length === 0) {
       container.createDiv({
         cls: "rss-reader__empty-state",
@@ -428,6 +493,45 @@ export class RssReaderView extends ItemView {
         this.observeVisibleTitles(this.readerList, this.readerItems);
       }
       this.renderLoadMoreSentinel(container, query);
+    }
+    this.renderBackToTopAction(container);
+  }
+
+  private renderSearch(container: HTMLElement): void {
+    this.renderPageSearch(
+      container,
+      "reader",
+      this.readerQuery,
+      t("reader.search_papers"),
+    );
+  }
+
+  private renderPageSearch(
+    container: HTMLElement,
+    page: Page,
+    value: string,
+    ariaLabel: string,
+  ): void {
+    const search = container.createDiv({
+      cls:
+        page === "reader"
+          ? "rss-reader__search"
+          : "rss-reader__search rss-reader__search--page",
+    });
+    const input = search.createEl("input", {
+      type: "search",
+      placeholder: t("reader.search_placeholder"),
+      attr: {
+        "aria-label": ariaLabel,
+      },
+    });
+    input.value = value;
+    if (page === "reader") {
+      this.readerSearchInput = input;
+    } else if (page === "feeds") {
+      this.feedSearchInput = input;
+    } else {
+      this.analyticsSearchInput = input;
     }
   }
 
@@ -506,7 +610,6 @@ export class RssReaderView extends ItemView {
       },
     });
     if (this.readerItems.length >= this.readerMatched) {
-      this.renderBackToTopAction(container);
       return;
     }
     const IntersectionObserverConstructor =
@@ -567,13 +670,10 @@ export class RssReaderView extends ItemView {
       ) {
         this.loadMoreObserver?.disconnect();
         this.readerSentinel.setText(t("ui.all_papers_loaded"));
-        const container = this.readerSentinel.parentElement;
-        if (container?.instanceOf(HTMLElement)) {
-          this.renderBackToTopAction(container);
-        }
       } else {
         this.readerSentinel.setText(t("ui.scroll_down_to_load_more"));
       }
+      this.updateBackToTopPosition();
     } finally {
       this.loadingMore = false;
       this.readerSentinel?.removeAttribute("aria-busy");
@@ -588,28 +688,39 @@ export class RssReaderView extends ItemView {
   }
 
   private renderBackToTopAction(container: HTMLElement): void {
-    if (this.readerBackToTopButton?.isConnected) {
+    if (
+      this.readerBackToTopButton?.isConnected &&
+      this.readerBackToTopActions?.isConnected
+    ) {
       return;
     }
     const actions = container.createDiv({
       cls: "rss-reader__end-actions",
     });
+    const layer = actions.createDiv({
+      cls: "rss-reader__back-to-top-layer",
+    });
+    this.readerBackToTopActions = actions;
     this.readerBackToTopButton = this.actionButton(
-      actions,
+      layer,
       t("ui.back_to_top"),
       "arrow-up",
-      () => scrollToTop(this.readerScrollContainer()),
+      () => {
+        scrollToTop(this.readerScrollContainer());
+        this.updateBackToTopPosition();
+      },
     );
     this.readerBackToTopButton.addClass("rss-reader__back-to-top");
     this.readerBackToTopButton.setAttribute(
       "aria-label",
       t("ui.back_to_top"),
     );
+    this.updateBackToTopPosition(false);
   }
 
   private renderSortActions(container: HTMLElement): void {
     const group = container.createDiv({
-      cls: "rss-reader__sort-actions",
+      cls: "rss-reader__control-group rss-reader__sort-actions",
       attr: {
         role: "group",
         "aria-label": t("reader.sort_options"),
@@ -632,6 +743,20 @@ export class RssReaderView extends ItemView {
       button.toggleClass("is-active", active);
       button.setAttribute("aria-pressed", String(active));
     }
+  }
+
+  private openRecommendationModal(): void {
+    new RecommendationModal(this.plugin, {
+      onChanged: () => this.refresh(),
+      onLowRecommendationsHidden: (itemIds, changed) => {
+        this.lastAction = {
+          itemIds,
+          fromStatus: "unread",
+          label: t("recommendation.low_papers", { count: changed }),
+        };
+        return this.refresh();
+      },
+    }).open();
   }
 
   private renderTitle(container: HTMLElement, item: RssItem): void {
@@ -906,129 +1031,195 @@ export class RssReaderView extends ItemView {
     return container?.instanceOf(HTMLElement) ? container : null;
   }
 
-  private renderRecommendation(container: HTMLElement): void {
-    const panel = container.createEl("details", {
-      cls: "rss-reader__recommendation",
+  private registerReaderScrollListener(container: HTMLElement): void {
+    if (this.readerScrollListenerContainer === container) {
+      return;
+    }
+    this.readerScrollListenerContainer = container;
+    this.registerDomEvent(container, "scroll", () => {
+      this.updateBackToTopPosition();
     });
-    panel.createEl("summary", { text: t("ui.personalized_recommendations") });
-    const summary = this.plugin.repository.getRecommendationSummary();
-    const metrics = panel.createDiv({ cls: "rss-reader__metrics" });
-    for (const [label, value] of [
-      [t("ui.high_relevance"), summary.high],
-      [t("ui.pending"), summary.pending],
-      [t("ui.low_relevance"), summary.low],
-      [t("ui.unscored"), summary.unscored],
+    this.registerDomEvent(container, "compositionstart", (event) => {
+      const input = this.searchInputForTarget(event.target);
+      if (!input) {
+        return;
+      }
+      this.searchComposingInput = input;
+      this.clearSearchRefreshTimer();
+    });
+    const finishSearchComposition = (event: CompositionEvent) => {
+      const input = this.searchInputForTarget(event.target);
+      if (!input) {
+        return;
+      }
+      this.searchComposingInput = null;
+      this.setSearchQuery(input, input.value);
+      this.scheduleSearchRefresh();
+    };
+    this.registerDomEvent(container, "compositionend", finishSearchComposition);
+    this.registerDomEvent(container, "input", (event) => {
+      const input = this.searchInputForTarget(event.target);
+      if (!input) {
+        return;
+      }
+      this.setSearchQuery(input, input.value);
+      const isComposing =
+        "isComposing" in event && event.isComposing === true;
+      if (this.searchComposingInput === input || isComposing) {
+        return;
+      }
+      this.scheduleSearchRefresh();
+    });
+  }
+
+  private searchInputForTarget(
+    target: EventTarget | null,
+  ): HTMLInputElement | null {
+    for (const input of [
+      this.readerSearchInput,
+      this.feedSearchInput,
+      this.analyticsSearchInput,
     ]) {
-      const metric = metrics.createDiv({ cls: "rss-reader__metric" });
-      metric.createSpan({ text: String(label) });
-      metric.createEl("strong", { text: String(value ?? 0) });
-    }
-    if (summary.errorMessage) {
-      panel.createEl("p", {
-        cls: "rss-reader__warning",
-        text: summary.errorMessage,
-        attr: {
-          role: "alert",
-        },
-      });
-    } else if (summary.modelVersion) {
-      panel.createEl("p", {
-        cls: "rss-reader__caption",
-        text: `${t("recommendation.model_summary", {
-          positive: formatNumber(summary.positiveCount),
-          negative: formatNumber(summary.negativeCount),
-          unread: formatNumber(summary.unreadCount),
-          accuracy:
-            summary.validationAccuracy === null
-              ? "—"
-              : `${formatNumber(summary.validationAccuracy * 100)}%`,
-          low: formatNumber(
-            this.plugin.settings.recommendationLowThreshold ??
-              summary.suggestedLowThreshold,
-          ),
-          high: formatNumber(
-            this.plugin.settings.recommendationHighThreshold ??
-              summary.suggestedHighThreshold,
-          ),
-          updated: summary.createdAt
-            ? formatDate(summary.createdAt)
-            : "",
-        })}${this.plugin.recommendationService.isModelStale()
-          ? t("recommendation.stale")
-          : ""}`,
-      });
-    }
-    const actions = panel.createDiv({ cls: "rss-reader__item-actions" });
-    this.actionButton(actions, t("ui.update_keyword_recommendations"), "sparkles", async () => {
-      const notice = new Notice(t("ui.preparing_to_update_keyword_recommendations"), 0);
-      try {
-        await this.yieldToView();
-        const result = await this.plugin.recommendationService.rebuild(
-          (message) => notice.setMessage(message),
-        );
-        notice.setMessage(t("recommendation.updated", {
-          high: result.highCount,
-          pending: result.pendingCount,
-          low: result.lowCount,
-        }));
-      } catch (error) {
-        notice.setMessage(
-          error instanceof Error ? error.message : String(error),
-        );
-      } finally {
-        this.viewWindow()?.setTimeout(() => notice.hide(), 5000);
-        await this.refresh();
+      if (input && target === input) {
+        return input;
       }
-    });
-    this.actionButton(actions, t("ui.review_pending_items_with_llm"), "bot", async () => {
-      const notice = new Notice(t("ui.reviewing_pending_papers"), 0);
-      try {
-        const result = await this.plugin.llmService.reviewPending();
-        notice.setMessage(t("recommendation.reviewed", {
-          high: result.high,
-          low: result.low,
-          failed: result.failed,
-        }));
-      } catch (error) {
-        notice.setMessage(
-          error instanceof Error ? error.message : String(error),
-        );
-      } finally {
-        this.viewWindow()?.setTimeout(() => notice.hide(), 5000);
-        await this.refresh();
-      }
-    });
-    this.actionButton(actions, t("ui.keyword_list"), "list-tree", () => {
-      new KeywordModal(this.plugin).open();
-    });
-    const lowIds = this.plugin.repository.listLowRecommendationIds("", []);
-    this.actionButton(
-      actions,
-      t("recommendation.hide_low", { count: lowIds.length }),
-      "eye-off",
-      () => {
-        new ConfirmModal(
-          this.app,
-          t("recommendation.hide_confirm", { count: lowIds.length }),
-          async () => {
-            const changed = await this.plugin.repository.setItemStatus(
-              lowIds,
-              "hidden",
-            );
-            this.lastAction = {
-              itemIds: lowIds,
-              fromStatus: "unread",
-              label: t("recommendation.low_papers", { count: changed }),
-            };
-            await this.refresh();
-          },
-        ).open();
-      },
-      lowIds.length === 0,
+    }
+    return null;
+  }
+
+  private searchPageForInput(input: HTMLInputElement): Page | null {
+    if (input === this.readerSearchInput) {
+      return "reader";
+    }
+    if (input === this.feedSearchInput) {
+      return "feeds";
+    }
+    if (input === this.analyticsSearchInput) {
+      return "analytics";
+    }
+    return null;
+  }
+
+  private setSearchQuery(input: HTMLInputElement, value: string): void {
+    const page = this.searchPageForInput(input);
+    if (page === "reader") {
+      this.readerQuery = value;
+    } else if (page === "feeds") {
+      this.feedQuery = value;
+    } else if (page === "analytics") {
+      this.analyticsQuery = value;
+    }
+  }
+
+  private updateBackToTopPosition(animate = true): void {
+    const actions = this.readerBackToTopActions;
+    const layer = this.readerBackToTopButton?.parentElement;
+    const container = this.readerScrollContainer();
+    if (!actions || !layer || !container) {
+      return;
+    }
+    const shouldFloat = !isScrollAtBottom(container);
+    if (actions.hasClass("is-floating") === shouldFloat) {
+      return;
+    }
+    const startRect = animate ? layer.getBoundingClientRect() : null;
+    this.backToTopAnimation?.cancel();
+    this.backToTopAnimation = null;
+    actions.toggleClass("is-floating", shouldFloat);
+    if (!startRect || !layer.isConnected) {
+      return;
+    }
+    const endRect = layer.getBoundingClientRect();
+    const viewWindow = layer.ownerDocument.defaultView;
+    const prefersReducedMotion = viewWindow?.matchMedia?.(
+      "(prefers-reduced-motion: reduce)",
+    )?.matches ?? false;
+    const deltaX = startRect.left - endRect.left;
+    const deltaY = startRect.top - endRect.top;
+    if (
+      prefersReducedMotion ||
+      (Math.abs(deltaX) < 1 && Math.abs(deltaY) < 1) ||
+      typeof layer.animate !== "function"
+    ) {
+      return;
+    }
+    const animation = layer.animate(
+      [
+        { transform: `translate(${deltaX}px, ${deltaY}px)` },
+        { transform: "translate(0, 0)" },
+      ],
+      { duration: 180, easing: "ease-out" },
     );
+    this.backToTopAnimation = animation;
+    animation.onfinish = () => {
+      if (this.backToTopAnimation === animation) {
+        this.backToTopAnimation = null;
+      }
+    };
+    animation.oncancel = animation.onfinish;
+  }
+
+  private restoreRefreshState(
+    container: HTMLElement,
+    options: RefreshOptions,
+    preserveScrollTop: number | undefined,
+  ): void {
+    if (options.resetScrollTop) {
+      scrollToTop(container);
+    } else {
+      restoreScrollTop(container, preserveScrollTop);
+    }
+    if (options.preserveSearchFocus) {
+      this.focusSearchInput();
+    }
+    this.updateBackToTopPosition(false);
+  }
+
+  private focusSearchInput(): void {
+    const input = this.page === "reader"
+      ? this.readerSearchInput
+      : this.page === "feeds"
+        ? this.feedSearchInput
+        : this.analyticsSearchInput;
+    if (!input?.isConnected) {
+      return;
+    }
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+  }
+
+  private scheduleSearchRefresh(): void {
+    const viewWindow = this.viewWindow();
+    if (!viewWindow) {
+      return;
+    }
+    if (this.searchRefreshTimer !== null) {
+      viewWindow.clearTimeout(this.searchRefreshTimer);
+    }
+    this.searchRefreshTimer = viewWindow.setTimeout(() => {
+      this.searchRefreshTimer = null;
+      runUiAction(() => this.refresh({
+        preserveSearchFocus: true,
+        resetScrollTop: true,
+      }));
+    }, SEARCH_DEBOUNCE_MS);
+  }
+
+  private clearSearchRefreshTimer(): void {
+    const viewWindow = this.viewWindow();
+    if (this.searchRefreshTimer !== null) {
+      viewWindow?.clearTimeout(this.searchRefreshTimer);
+      this.searchRefreshTimer = null;
+    }
   }
 
   private renderFeeds(container: HTMLElement): void {
+    this.renderPageSearch(
+      container,
+      "feeds",
+      this.feedQuery,
+      t("ui.search_subscriptions"),
+    );
     const actions = container.createDiv({ cls: "rss-reader__toolbar" });
     this.actionButton(actions, t("ui.add_feed"), "plus", () => {
       new FeedModal(this.plugin, null, () => this.refresh()).open();
@@ -1071,11 +1262,23 @@ export class RssReaderView extends ItemView {
       });
     }
 
-    const feeds = this.plugin.repository.listFeeds(true);
+    const allFeeds = this.plugin.repository.listFeeds(true);
+    const feeds = allFeeds.filter((feed) => matchesFuzzyQuery(
+      this.feedQuery,
+      [
+        feed.name,
+        feed.journalName,
+        feed.displayJournalName,
+        feed.url,
+        feed.lastError,
+      ],
+    ));
     if (feeds.length === 0) {
       container.createDiv({
         cls: "rss-reader__empty-state",
-        text: t("ui.no_feeds_yet"),
+        text: allFeeds.length === 0
+          ? t("ui.no_feeds_yet")
+          : t("ui.no_matching_results"),
       });
       return;
     }
@@ -1182,6 +1385,12 @@ export class RssReaderView extends ItemView {
   }
 
   private renderAnalytics(container: HTMLElement): void {
+    this.renderPageSearch(
+      container,
+      "analytics",
+      this.analyticsQuery,
+      t("ui.search_interest_analysis"),
+    );
     const counts = this.plugin.repository.countByStatus();
     const metrics = container.createDiv({ cls: "rss-reader__metrics" });
     for (const [label, value] of [
@@ -1202,7 +1411,7 @@ export class RssReaderView extends ItemView {
         days: this.plugin.settings.hiddenExpireDays,
       }),
     });
-    const rows: Array<Record<string, unknown> & { rate: number }> =
+    const allRows: Array<Record<string, unknown> & { rate: number }> =
       this.plugin.repository
       .listFeedStats()
       .map((row) => {
@@ -1216,6 +1425,17 @@ export class RssReaderView extends ItemView {
         };
       })
       .sort((left, right) => right.rate - left.rate);
+    const rows = allRows.filter((row) => matchesFuzzyQuery(
+      this.analyticsQuery,
+      [row.name, row.journal_name, row.inferred_journal, row.url],
+    ));
+    if (rows.length === 0) {
+      container.createDiv({
+        cls: "rss-reader__empty-state",
+        text: t("ui.no_matching_results"),
+      });
+      return;
+    }
     const tableShell = container.createDiv({
       cls: "rss-reader__table-shell",
     });
@@ -1589,6 +1809,168 @@ class GraphicalAbstractModal extends Modal {
   }
 }
 
+class RecommendationModal extends Modal {
+  constructor(
+    private readonly plugin: RssReaderPlugin,
+    private readonly callbacks: RecommendationModalCallbacks,
+  ) {
+    super(plugin.app);
+  }
+
+  onOpen(): void {
+    this.modalEl.addClass("rss-reader__recommendation-modal");
+    this.setTitle(t("ui.personalized_recommendations"));
+    this.render();
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+  }
+
+  private render(): void {
+    this.contentEl.empty();
+    const summary = this.plugin.repository.getRecommendationSummary();
+    const table = this.contentEl.createEl("table", {
+      cls: "rss-reader__recommendation-table",
+      attr: {
+        "aria-label": t("ui.personalized_recommendations"),
+      },
+    });
+    const body = table.createEl("tbody");
+    for (const [label, value] of [
+      [t("ui.high_relevance"), summary.high],
+      [t("ui.low_relevance"), summary.low],
+      [t("ui.pending"), summary.pending],
+      [t("ui.unscored"), summary.unscored],
+    ]) {
+      const row = body.createEl("tr");
+      row.createEl("th", {
+        attr: { scope: "row" },
+        text: String(label),
+      });
+      row.createEl("td", { text: String(value ?? 0) });
+    }
+    if (summary.errorMessage) {
+      this.contentEl.createEl("p", {
+        cls: "rss-reader__warning",
+        text: summary.errorMessage,
+        attr: { role: "alert" },
+      });
+    }
+
+    const actions = this.contentEl.createDiv({
+      cls: "rss-reader__recommendation-modal-actions",
+    });
+    this.actionButton(
+      actions,
+      t("ui.update_keyword_recommendations"),
+      "sparkles",
+      async () => {
+        const notice = new Notice(
+          t("ui.preparing_to_update_keyword_recommendations"),
+          0,
+        );
+        try {
+          await this.yieldToModal();
+          const result = await this.plugin.recommendationService.rebuild(
+            (message) => notice.setMessage(message),
+          );
+          notice.setMessage(t("recommendation.updated", {
+            high: result.highCount,
+            pending: result.pendingCount,
+            low: result.lowCount,
+          }));
+        } catch (error) {
+          notice.setMessage(errorMessage(error));
+        } finally {
+          this.modalWindow()?.setTimeout(() => notice.hide(), 5000);
+          await this.callbacks.onChanged();
+          this.render();
+        }
+      },
+    );
+    this.actionButton(
+      actions,
+      t("ui.review_pending_items_with_llm"),
+      "bot",
+      async () => {
+        const notice = new Notice(t("ui.reviewing_pending_papers"), 0);
+        try {
+          const result = await this.plugin.llmService.reviewPending();
+          notice.setMessage(t("recommendation.reviewed", {
+            high: result.high,
+            low: result.low,
+            failed: result.failed,
+          }));
+        } catch (error) {
+          notice.setMessage(errorMessage(error));
+        } finally {
+          this.modalWindow()?.setTimeout(() => notice.hide(), 5000);
+          await this.callbacks.onChanged();
+          this.render();
+        }
+      },
+    );
+    this.actionButton(actions, t("ui.keyword_list"), "list-tree", () => {
+      new KeywordModal(this.plugin).open();
+    });
+    const lowIds = this.plugin.repository.listLowRecommendationIds("", []);
+    this.actionButton(
+      actions,
+      t("recommendation.hide_low", { count: lowIds.length }),
+      "eye-off",
+      () => {
+        new ConfirmModal(
+          this.plugin.app,
+          t("recommendation.hide_confirm", { count: lowIds.length }),
+          async () => {
+            const changed = await this.plugin.repository.setItemStatus(
+              lowIds,
+              "hidden",
+            );
+            await this.callbacks.onLowRecommendationsHidden(lowIds, changed);
+            this.render();
+          },
+        ).open();
+      },
+      lowIds.length === 0,
+    );
+  }
+
+  private actionButton(
+    container: HTMLElement,
+    label: string,
+    icon: string,
+    action: () => void | Promise<void>,
+    disabled = false,
+  ): HTMLButtonElement {
+    const button = new ButtonComponent(container)
+      .setButtonText(label)
+      .setDisabled(disabled)
+      .onClick(() => runUiAction(action, button.buttonEl));
+    const iconEl = button.buttonEl.createSpan({
+      cls: "rss-reader__recommendation-action-icon",
+    });
+    setIcon(iconEl, icon);
+    button.buttonEl.prepend(iconEl);
+    return button.buttonEl;
+  }
+
+  private modalWindow(): Window | null {
+    return this.contentEl.ownerDocument.defaultView;
+  }
+
+  private async yieldToModal(): Promise<void> {
+    const modalWindow = this.modalWindow();
+    if (!modalWindow) {
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      modalWindow.setTimeout(resolve, 0);
+    });
+  }
+}
+
 class KeywordModal extends Modal {
   constructor(private readonly plugin: RssReaderPlugin) {
     super(plugin.app);
@@ -1732,6 +2114,24 @@ function statusIcon(status: ItemStatus): string {
     hidden: "eye-off",
     expired: "history",
   }[status];
+}
+
+function matchesFuzzyQuery(query: string, values: unknown[]): boolean {
+  const terms = query.normalize("NFKC").toLocaleLowerCase()
+    .match(/[\p{L}\p{N}]+/gu) ?? [];
+  if (terms.length === 0) {
+    return true;
+  }
+  const haystack = values
+    .map((value) =>
+      typeof value === "string" ||
+      typeof value === "number" ||
+      typeof value === "bigint"
+        ? String(value).normalize("NFKC").toLocaleLowerCase()
+        : ""
+    )
+    .join(" ");
+  return terms.every((term) => haystack.includes(term));
 }
 
 function safeJson(value: string): unknown {
