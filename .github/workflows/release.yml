@@ -36,6 +36,7 @@ jobs:
         run: |
           npm run lint -- --max-warnings=0
           npm run check:i18n
+          npm run check:architecture
           npm test
           npm run build
           npm run package

@@ -1,10 +1,21 @@
-import { createHash } from "node:crypto";
-
 import { XMLParser } from "fast-xml-parser";
 import { SyntaxValidator } from "fast-xml-validator";
 
 import { t } from "../i18n";
 import type { ParsedItem } from "../models/domain";
+import {
+  canonicalizeLink,
+  stableGuid as buildStableGuid,
+  normalizeText,
+  type StableGuidInput,
+} from "../models/item-identity";
+import { sha256 } from "../infrastructure/desktop-runtime";
+
+export {
+  canonicalizeLink,
+  normalizeText,
+  publisherIdentity,
+} from "../models/item-identity";
 
 interface XmlNode {
   [key: string]: unknown;
@@ -16,20 +27,6 @@ export interface ParsedFeed {
 }
 
 export const MAX_FEED_XML_BYTES = 10 * 1024 * 1024;
-
-const TRACKING_QUERY_PARAMETERS = new Set([
-  "fbclid",
-  "gclid",
-  "dgcid",
-  "dclid",
-  "gbraid",
-  "wbraid",
-  "msclkid",
-  "mc_cid",
-  "mc_eid",
-  "_ga",
-  "_gl",
-]);
 
 const ITEM_CONTENT_FIELDS = [
   "summary",
@@ -126,43 +123,6 @@ export function stripHtml(value: string): string {
     .trim();
 }
 
-export function normalizeText(value: string): string {
-  return stripHtml(value)
-    .normalize("NFKC")
-    .toLocaleLowerCase()
-    .replace(/\s+/gu, "")
-    .replace(
-      /[\u3000\s\-—–_·,，.。:：;；!！?？'‘’"“”()（）【】{}《》<>/\\|]+/gu,
-      "",
-    )
-    .replace(/[[\]]+/gu, "");
-}
-
-export function canonicalizeLink(value: string): string {
-  const link = value.trim();
-  if (!link) {
-    return "";
-  }
-  try {
-    const url = new URL(link);
-    if (url.protocol !== "http:" && url.protocol !== "https:") {
-      return "";
-    }
-    url.hash = "";
-    for (const parameter of [...url.searchParams.keys()]) {
-      if (
-        parameter.toLocaleLowerCase().startsWith("utm_") ||
-        TRACKING_QUERY_PARAMETERS.has(parameter.toLocaleLowerCase())
-      ) {
-        url.searchParams.delete(parameter);
-      }
-    }
-    return url.toString();
-  } catch {
-    return "";
-  }
-}
-
 export function findDoi(...values: string[]): string {
   const match = values
     .join(" ")
@@ -170,54 +130,8 @@ export function findDoi(...values: string[]): string {
   return match?.[0]?.replace(/[.,;)\]]+$/, "").toLocaleLowerCase() ?? "";
 }
 
-export function publisherIdentity(value: string): string {
-  const link = value.trim();
-  if (!link) {
-    return "";
-  }
-  try {
-    const url = new URL(link);
-    const hostname = url.hostname.toLocaleLowerCase();
-    if (
-      hostname === "sciencedirect.com" ||
-      hostname.endsWith(".sciencedirect.com")
-    ) {
-      const match = url.pathname.match(/\/pii\/([^/]+)/i);
-      if (match?.[1]) {
-        return `sciencedirect-pii:${decodeURIComponent(match[1]).toLocaleUpperCase()}`;
-      }
-    }
-    return "";
-  } catch {
-    return "";
-  }
-}
-
-export function stableGuid(input: {
-  title: string;
-  journal: string;
-  year: string;
-  authors: string;
-  doi: string;
-  link?: string;
-}): string {
-  const doi = input.doi.trim().toLocaleLowerCase().replace(/^doi:\s*/i, "");
-  if (doi) {
-    return `doi:${doi}`;
-  }
-  const title = normalizeText(input.title);
-  const author = normalizeText(input.authors).slice(0, 48);
-  const publisherId = publisherIdentity(input.link ?? "");
-  const identity = author
-    ? [title, input.year || "", author]
-    : publisherId
-      ? [publisherId]
-    : [title, input.year || "", normalizeText(input.journal)];
-  const digest = createHash("sha256")
-    .update(identity.join("|"))
-    .digest("hex")
-    .slice(0, 24);
-  return `${publisherId && !author ? "publisher" : "cnki-local"}:${digest}`;
+export function stableGuid(input: StableGuidInput): string {
+  return buildStableGuid(input, sha256);
 }
 
 function entryToItem(

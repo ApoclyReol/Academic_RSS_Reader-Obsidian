@@ -32,6 +32,9 @@ jobs:
       - name: Check localization
         run: npm run check:i18n
 
+      - name: Check architecture boundaries
+        run: npm run check:architecture
+
       - name: Test
         run: npm test
 
@@ -82,3 +85,6 @@ jobs:
 
       - name: Build in the community verifier runtime
         run: npm run build
+
+      - name: Test in the community verifier runtime
+        run: npm test

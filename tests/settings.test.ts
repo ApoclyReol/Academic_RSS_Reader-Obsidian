@@ -144,6 +144,31 @@ describe("declarative settings", () => {
       cardShowGraphicalAbstract: true,
       targetLanguage: "zh-CN",
     });
+
+    const corrupted = normalizeSettings({
+      dataDirectory: 42,
+      autoUpdateOnStartup: "yes",
+      hiddenExpireDays: 0,
+      googleTranslationDisclosureAccepted: "true",
+      llmBaseUrl: 123,
+      llmSecretId: null,
+      llmModel: "  model  ",
+      userInterest: "  interests  ",
+      recommendationLowThreshold: "20",
+      recommendationHighThreshold: 140,
+    } as unknown as Partial<RssReaderSettings>);
+    expect(corrupted).toMatchObject({
+      dataDirectory: "",
+      autoUpdateOnStartup: true,
+      hiddenExpireDays: 30,
+      googleTranslationDisclosureAccepted: false,
+      llmBaseUrl: "",
+      llmSecretId: "",
+      llmModel: "model",
+      userInterest: "interests",
+      recommendationLowThreshold: null,
+      recommendationHighThreshold: 100,
+    });
   });
 
   it("keeps normalized values when declarative controls save", async () => {
@@ -168,7 +193,11 @@ describe("declarative settings", () => {
 
   it("reflects database readiness in declarative visibility predicates", () => {
     const isDatabaseReady = vi.fn(() => false);
-    const plugin = createPluginStub({ isDatabaseReady });
+    const canRestoreDatabaseBackup = vi.fn(() => false);
+    const plugin = createPluginStub({
+      isDatabaseReady,
+      canRestoreDatabaseBackup,
+    });
     const tab = new RssReaderSettingTab({} as App, plugin);
     const databaseGroup = tab
       .getSettingDefinitions()
@@ -194,6 +223,22 @@ describe("declarative settings", () => {
         ? currentDatabase.visible()
         : currentDatabase.visible,
     ).toBe(true);
+
+    const protection = databaseGroup?.items?.[2];
+    expect(protection && "visible" in protection).toBe(true);
+    if (protection && "visible" in protection) {
+      expect(
+        typeof protection.visible === "function"
+          ? protection.visible()
+          : protection.visible,
+      ).toBe(false);
+      canRestoreDatabaseBackup.mockReturnValue(true);
+      expect(
+        typeof protection.visible === "function"
+          ? protection.visible()
+          : protection.visible,
+      ).toBe(true);
+    }
   });
 
   it("saves non-reader settings without refreshing the reader", async () => {
@@ -260,12 +305,15 @@ function isSettingControl(
 
 function createPluginStub(overrides: {
   isDatabaseReady?: ReturnType<typeof vi.fn>;
+  canRestoreDatabaseBackup?: ReturnType<typeof vi.fn>;
   saveSettings?: ReturnType<typeof vi.fn>;
 } = {}): RssReaderPlugin & {
   isDatabaseReady: ReturnType<typeof vi.fn>;
   saveSettings: ReturnType<typeof vi.fn>;
 } {
   const isDatabaseReady = overrides.isDatabaseReady ?? vi.fn(() => false);
+  const canRestoreDatabaseBackup =
+    overrides.canRestoreDatabaseBackup ?? vi.fn(() => false);
   const saveSettings =
     overrides.saveSettings ?? vi.fn(async () => undefined);
   return {
@@ -275,6 +323,7 @@ function createPluginStub(overrides: {
     getCurrentDatabasePath: vi.fn(() => null),
     getVaultAdapter: vi.fn(),
     isDatabaseReady,
+    canRestoreDatabaseBackup,
     saveSettings,
   } as unknown as RssReaderPlugin & {
     isDatabaseReady: ReturnType<typeof vi.fn>;

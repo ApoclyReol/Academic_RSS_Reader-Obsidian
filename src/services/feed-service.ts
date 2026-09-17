@@ -8,7 +8,7 @@ import type {
 } from "../models/domain";
 import type { RssReaderSettings } from "../models/settings";
 import { RssRepository } from "../repositories/rss-repository";
-import type { DatabaseOperationCoordinator } from "./database-operation-coordinator";
+import type { DatabaseOperationCoordinator } from "../infrastructure/database-operation-coordinator";
 import {
   MAX_FEED_XML_BYTES,
   parseFeed,
@@ -498,7 +498,7 @@ export class FeedService {
         const headers: Record<string, string> = {
           Accept:
             "application/rss+xml, application/atom+xml, application/xml, text/xml, */*",
-          "User-Agent": "Academic-RSS-Reader/1.7.0",
+          "User-Agent": "Academic-RSS-Reader/1.7.1",
         };
         const hasMalformedMetadata =
           isMalformedImportedName(feed.name) ||

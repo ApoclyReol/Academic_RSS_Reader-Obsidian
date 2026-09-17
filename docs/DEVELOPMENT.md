@@ -13,6 +13,8 @@ Node.js 22.16 或更高版本，并提供 `node:sqlite` 的 `DatabaseSync` 与 S
 npm install
 npm run dev
 npm run lint
+npm run check:architecture
+npm run check:i18n
 npm test
 npm run build
 npm run package
@@ -29,13 +31,19 @@ npm run package
 ```text
 src/
 ├── database/       # node:sqlite、schema、串行写入和安全恢复
+├── infrastructure/ # 原生运行时、Vault 路径和数据库操作协调
 ├── locales/        # 键集合一致的英文与简体中文文案
-├── models/         # 领域类型和设置
+├── models/         # 领域类型、设置和文献身份算法
 ├── repositories/  # SQL 查询、写入和兼容维护
+│   ├── repository-helpers.ts       # 查询片段、值规范化和排序
+│   ├── row-mappers.ts              # SQLite 行到领域对象
+│   └── legacy-identity-repair.ts   # 旧文献身份兼容整理
 ├── services/       # RSS、翻译、推荐和 LLM
+│   └── recommendation-core.ts      # 无 UI 的特征、训练和评分算法
 ├── settings/       # Obsidian 设置页与 Vault 目录联想
-├── types/          # 第三方模块声明
-└── views/          # 阅读、订阅管理和兴趣分析
+└── views/          # 阅读、订阅管理、兴趣分析和弹窗
+    ├── modals.ts                   # 复用的确认、导入和内容弹窗
+    └── ui-action.ts                # UI 异步操作与错误处理
 ```
 
 约束：
@@ -44,7 +52,7 @@ src/
 - Feed Service 先完成 RSS 入库，再通知翻译服务。
 - UI 不直接执行 SQL。
 - 数据目录先按 Vault 相对路径校验，再通过 `DataAdapter.getFullPath()` 解析；原生文件 API 只接触 SQLite 主文件、WAL/SHM sidecar、incoming/rollback/tmp/previous 文件和 `backups/` 中的数据库备份，其他 Vault 文件继续使用 `DataAdapter`。
-- `RssDatabase` 使用 `DatabaseSync`、WAL、`foreign_keys=ON`、`busy_timeout=5000`、`BEGIN IMMEDIATE` 和单一写队列。关闭前必须按 service stop/drain → database drain → database close 的顺序执行。
+- `RssDatabase` 使用 `DatabaseSync`、WAL、`foreign_keys=ON`、`busy_timeout=5000`、`BEGIN IMMEDIATE` 和单一写队列。正常关闭前必须按 service stop/drain → database drain → database close 的顺序执行；恢复路径使用 `waitForWrites()`，避免终态持久化错误阻断恢复。
 - 备份使用 SQLite Backup API；恢复使用 incoming/rollback 临时文件和保护快照；替换失败时恢复原库并保留可诊断候选。
 - v3 数据库载入时原地升级到 schema 5。升级前使用 `VACUUM INTO` 在 `backups/` 创建保护备份；迁移失败时回滚到原文件。
 - 每批订阅更新完成后自动刷新推荐；训练数据 hash 未变化时复用模型并仅增量评分。用户仍可通过按钮主动重建。
@@ -54,6 +62,9 @@ src/
 - 插件加载阶段不创建数据库；用户选择 Vault 内数据目录并创建或载入后，才构造 Repository 和业务服务。
 - 运行数据库与 `backups/` 固定在用户选择的数据目录，插件目录只保留 Obsidian 管理的设置和发布文件。
 
+提交前至少执行 lint、架构边界、i18n、测试、生产构建、package 和 `git diff --check`；Node.js
+22.16+ 验证任务还会运行测试，确保社区桌面运行时不只有构建可用。
+
 详细的组件职责、业务流程、并发和生命周期状态见[架构设计](ARCHITECTURE.md)。本节只保留
 开发时必须快速核对的边界。
 
@@ -62,6 +73,7 @@ src/
 - 用户文案统一使用稳定语义键和 `t(key, params)`；不得使用中文完整句子作为键或缓存模块级翻译结果。
 - `plural()`、`formatNumber()`、`formatDate()` 处理复数、数字和日期。界面语言跟随 Obsidian，与内容翻译目标语言相互独立。
 - `npm run check:i18n` 检查语言包键集合、未知键、遗留 `tx()` 和常见 UI API 的硬编码文案，并在 CI 中执行。
+- `npm run check:architecture` 检查 database、infrastructure、models 和 repositories 不反向依赖 services。
 
 ## 启动顺序与状态所有权
 
@@ -78,8 +90,9 @@ Plugin.onload
 
 - `RssReaderPlugin` 拥有当前数据库上下文与 `DatabaseState`，负责创建和释放 services。
 - `RssDatabase` 拥有 `DatabaseSync`、串行写链、WAL 处理、备份和恢复。
-- `RssRepository` 是唯一 SQL 访问入口。
-- `DatabaseOperationCoordinator` 跟踪后台任务，并在切换或恢复数据库时阻止新写入。
+- `RssRepository` 是唯一 SQL 执行入口；查询片段、行映射和旧身份整理分别由仓储辅助模块承担。
+- `RecommendationService` 只协调推荐任务，特征/训练/评分逻辑位于 `recommendation-core.ts`；`RssReaderView` 的弹窗和异步 UI 操作分别位于 `modals.ts` 与 `ui-action.ts`。
+- `DatabaseOperationCoordinator` 跟踪后台任务，在切换或恢复数据库时阻止新写入，并阻止推荐与 LLM 复核同时改写共享结果。
 - `TranslationService` 拥有翻译队列；数据库恢复后重新载入未完成任务。
 - `RssReaderView` 只读取 repository 与调用 services，不持有数据库生命周期。
 - 界面语言在插件启动时初始化，所有文案在渲染或操作发生时解析；不得在模块顶层缓存 `t()` 结果。
@@ -150,7 +163,7 @@ v1.0.0 增加：
 3. 五篮子状态流转和撤回。
 4. 标题翻译开关、视口预取、缓存和失败回退。
 5. 订阅开关、单个更新和批量导入。
-6. 未配置引导、创建、载入、目录切换、保护备份、恢复、损坏文件保留和外键检查。
+6. 未配置引导、创建、载入、目录切换、保护备份、恢复、持久化错误后的恢复入口、损坏文件保留和外键检查。
 7. 稀疏推荐、阈值校准、增量评分、LLM 严格响应和兴趣分析。
 8. 中文语言环境显示完整简体中文界面；英文及其他语言环境显示完整英文界面。
 9. 分别检查设置、阅读器、命令、通知、动态进度、错误、确认框和 ARIA 文案，确认语言一致且没有未翻译文本。

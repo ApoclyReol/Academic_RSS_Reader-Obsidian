@@ -1,6 +1,6 @@
 # 架构设计
 
-本文面向维护者，描述 Academic RSS Reader v1.7.0 的当前运行架构。代码、测试和
+本文面向维护者，描述 Academic RSS Reader v1.7.1 的当前运行架构。代码、测试和
 `src/database/schema.ts` 是最终事实源。
 
 ## 总览
@@ -12,8 +12,12 @@ flowchart LR
     V --> S
     V --> R["RssRepository"]
     S --> R
+    S --> M["Domain Models / Algorithms"]
+    R --> M
     R --> D["RssDatabase"]
-    D --> N["node:sqlite / SQLite file"]
+    D --> I["Infrastructure"]
+    S --> I
+    I --> N["node:sqlite / SQLite file"]
     S --> W["requestUrl / Worker"]
     O --> C["DatabaseOperationCoordinator"]
     S --> C
@@ -25,17 +29,20 @@ flowchart LR
 ```text
 Obsidian 生命周期与 UI
         ↓
-业务服务
-        ↓
-Repository
+业务服务 ─────→ 领域模型 / 算法
+        ↓                    ↑
+Repository ────────────────┘
         ↓
 RssDatabase
         ↓
-node:sqlite
+Infrastructure（原生运行时、Vault 路径、操作协调）
+        ↓
+node:sqlite / SQLite file
 ```
 
-UI 和 Service 不直接执行 SQL；所有业务 SQL 集中在 `RssRepository`。`RssDatabase`
-只负责连接、事务、迁移、校验、备份和恢复，不理解订阅或推荐业务。
+UI 和 Service 不直接执行 SQL；所有业务 SQL 集中在 `RssRepository`。低层模块不得反向依赖
+`src/services/`；该边界由 `npm run check:architecture` 自动检查。`RssDatabase` 只负责连接、事务、
+迁移、校验、备份和恢复，不理解订阅或推荐业务。
 
 ## 模块职责
 
@@ -43,11 +50,20 @@ UI 和 Service 不直接执行 SQL；所有业务 SQL 集中在 `RssRepository`�
 |---|---|---|
 | `src/main.ts` | 插件生命周期、数据库上下文、服务装配、目录切换 | 业务 SQL、RSS 解析 |
 | `src/database/` | SQLite 连接、写队列、schema、迁移、备份恢复 | 页面状态、推荐算法 |
-| `src/repositories/` | 唯一 SQL 访问层、领域对象映射、兼容查找 | 网络请求、DOM |
-| `src/services/` | Feed、翻译、推荐、LLM 和任务协调 | 直接渲染界面 |
-| `src/views/` | 阅读器、订阅管理、分析和局部 UI 更新 | 数据库生命周期 |
+| `src/infrastructure/` | 原生模块延迟加载、Vault 路径校验、数据库操作互斥 | 业务 SQL、页面渲染 |
+| `src/models/` | 领域类型、设置和文献身份规范化算法 | 访问数据库、网络请求 |
+| `src/repositories/` | 唯一 SQL 执行层、领域对象映射、兼容查找 | 网络请求、DOM |
+| `src/services/` | Feed、翻译、推荐、LLM 和任务协调 | 直接执行 SQL、直接渲染界面 |
+| `src/views/` | 阅读器、订阅管理、分析、弹窗和局部 UI 更新 | 数据库生命周期 |
 | `src/settings/` | 声明式设置、数据目录选择与数据库操作入口 | 保存业务数据 |
 | `src/locales/` | 英文事实词典和简体中文翻译 | 模块级缓存翻译结果 |
+
+为控制单文件复杂度，`RssRepository` 保留唯一 SQL 执行边界，但查询片段与值规范化放在
+`repository-helpers.ts`，数据库行映射放在 `row-mappers.ts`，旧文献身份整理放在
+`legacy-identity-repair.ts`。文献链接与稳定身份规则位于 `models/item-identity.ts`；推荐的特征、
+训练和评分算法位于无 UI 的 `recommendation-core.ts`，运行时 hash 通过依赖注入提供，
+`RecommendationService` 只负责任务生命周期和持久化协调。
+阅读器弹窗集中在 `views/modals.ts`，共享 UI 错误处理位于 `views/ui-action.ts`。
 
 `ServiceContext` 把一个数据库实例及其 Repository、Feed、Translation、
 Recommendation 和 LLM Service 绑定为同一上下文。切换数据库时不能复用旧上下文中的
@@ -73,7 +89,8 @@ stateDiagram-v2
 1. 校验 Vault 相对目录，拒绝空路径、绝对路径和 `..` 越界。
 2. 通过 `DataAdapter.getFullPath()` 解析 SQLite 的真实路径。
 3. 检查 Node.js、`DatabaseSync` 和 SQLite Backup API。
-4. 打开数据库，必要时从受控临时文件恢复。
+4. 打开数据库；正式库缺失或校验失败时，先校验受控的 `.tmp`、`.previous`、`.incoming`
+   和 `.rollback` 候选，再恢复为正式库。
 5. 创建新 schema 或按顺序执行 migration。
 6. 启用 WAL、外键与完整性检查。
 7. 创建 Repository 和各 Service，恢复未完成的翻译任务。
@@ -87,22 +104,26 @@ stateDiagram-v2
 → database.close()
 ```
 
-Obsidian 的 `onunload()` 接口本身返回 `void`；清理工作由该入口触发，但
-`disposeContext()` 内部仍保持以上异步顺序。后台任务必须依靠 generation 检查和操作
-协调器，保证迟到响应不再写入已释放上下文。
+Obsidian 的 `onunload()` 接口本身返回 `void`；清理工作由该入口触发，生命周期闸门会先让正在进行
+的创建、载入、切换或恢复退出，再清理最终上下文；`disposeContext()` 内部仍保持以上异步顺序。
+正常关闭使用 `database.drain()`，它会在写入
+排空后报告持久化错误；备份和恢复使用 `waitForWrites()`，因此已有持久化错误时仍可以
+等待队列结束并尝试恢复。后台任务必须依靠 generation 检查和操作协调器，保证迟到响应不再
+写入已释放上下文。
 
 ## 并发与取消
 
 系统使用两层保护：
 
 - `DatabaseOperationCoordinator`：普通后台操作通过 `acquireOperation()` 登记；目录切换
-  和恢复通过 `acquireTransition()` 建立互斥边界。
+  和恢复通过 `acquireTransition()` 建立互斥边界；推荐更新与 LLM 复核互相排斥。
 - `RssDatabase.write()`：所有写入进入同一 Promise 写链，并在 `BEGIN IMMEDIATE`
   事务内执行。
 
 Feed、Translation、Recommendation 和 LLM Service 各自维护递增 generation。网络返回、
-CPU 阶段和写数据库前都必须检查 generation。`stop()` 会停止接收新任务，并等待当前任务
-排空。
+CPU 阶段和写数据库前都必须检查 generation。Recommendation 与 LLM Service 还拒绝同类重复运行，
+推荐弹窗会在后台任务运行时禁用冲突按钮。`stop()` 会停止接收新任务，并等待当前任务排空；
+持久化故障处理使用不等待的 cancel 路径，避免在当前写事务回调中自等待。
 
 ## 主要业务流程
 
@@ -191,7 +212,9 @@ RSS 响应会用 channel title 修复名称和默认期刊，避免 304 阻止�
 完整可用且设置保存成功后才替换当前上下文。
 
 恢复先停止所有服务并创建 `before-restore` 保护备份，再通过 incoming/rollback 流程替换
-数据库；恢复完成后重新初始化翻译队列并恢复服务。
+数据库。恢复入口在数据库处于 `ready` 或持久化 `error` 状态时都可用；替换失败时会先关闭
+失败连接、恢复 `.rollback` 并重新打开原库，只有新库成功打开后才删除 rollback。恢复完成
+后重新初始化翻译队列并恢复服务。
 
 ## 文件与网络边界
 

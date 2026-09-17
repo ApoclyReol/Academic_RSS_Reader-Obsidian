@@ -3,7 +3,7 @@ import { requestUrl } from "obsidian";
 import { t } from "../i18n";
 import type { RssReaderSettings } from "../models/settings";
 import { RssRepository } from "../repositories/rss-repository";
-import type { DatabaseOperationCoordinator } from "./database-operation-coordinator";
+import type { DatabaseOperationCoordinator } from "../infrastructure/database-operation-coordinator";
 import { parseTier } from "./relevance";
 
 export interface LlmReviewRun {
@@ -48,19 +48,27 @@ export class LlmService {
     private readonly repository: RssRepository,
     private readonly getSettings: () => RssReaderSettings,
     private readonly getApiKey: () => string,
-    private readonly operationCoordinator?: DatabaseOperationCoordinator,
-    private readonly timerWindow: TimerWindow = window,
+    private readonly operationCoordinator: DatabaseOperationCoordinator | undefined,
+    private readonly timerWindow: TimerWindow,
   ) {}
 
   async stop(): Promise<void> {
-    this.stopped = true;
-    this.generation += 1;
+    this.cancel();
     await Promise.all([
       this.activeReview?.catch(() => undefined),
       ...[...this.activeRequests].map((request) =>
         request.catch(() => undefined),
       ),
     ]);
+  }
+
+  cancel(): void {
+    this.stopped = true;
+    this.generation += 1;
+  }
+
+  isBusy(): boolean {
+    return this.activeReview !== null;
   }
 
   resume(): void {
@@ -91,6 +99,9 @@ export class LlmService {
   async reviewPending(): Promise<LlmReviewRun> {
     if (this.stopped) {
       return { high: 0, low: 0, failed: 0 };
+    }
+    if (this.activeReview) {
+      throw new Error(t("ui.an_llm_review_is_already_in_progress"));
     }
     const generation = ++this.generation;
     const run = this.reviewPendingInternal(generation);

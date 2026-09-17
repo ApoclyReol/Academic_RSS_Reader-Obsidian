@@ -1,6 +1,10 @@
 type SqliteModule = typeof import("node:sqlite");
 type FileSystemModule = typeof import("node:fs");
 type PathModule = typeof import("node:path");
+type CryptoModule = Pick<
+  typeof import("node:crypto"),
+  "createHash" | "randomUUID"
+>;
 
 import { t } from "../i18n";
 
@@ -22,22 +26,37 @@ export function loadPathModule(): PathModule {
   return require("node:path") as PathModule;
 }
 
+export function loadCryptoModule(): CryptoModule {
+  assertNativeHost();
+  // eslint-disable-next-line @typescript-eslint/no-require-imports -- Keep Node crypto behind the desktop runtime boundary.
+  return require("node:crypto") as CryptoModule;
+}
+
+export function sha256(value: string): string {
+  return loadCryptoModule().createHash("sha256").update(value).digest("hex");
+}
+
+export function randomUuid(): string {
+  return loadCryptoModule().randomUUID();
+}
+
 export function assertSqliteRuntime(): SqliteModule {
+  const nodeVersion = currentNodeVersion();
   try {
     const runtime = loadSqliteModule();
-    assertSqliteRuntimeCapabilities(runtime, process.versions.node);
+    assertSqliteRuntimeCapabilities(runtime, nodeVersion);
     return runtime;
   } catch (error) {
     if (
       error instanceof Error &&
       error.message === t("ui.native_sqlite_runtime_required", {
-        node: process.versions.node,
+        node: nodeVersion,
       })
     ) {
       throw error;
     }
     throw new Error(t("ui.native_sqlite_runtime_required", {
-      node: process.versions.node,
+      node: nodeVersion,
     }));
   }
 }
@@ -57,6 +76,12 @@ export function assertSqliteRuntimeCapabilities(
       node: nodeVersion,
     }));
   }
+}
+
+function currentNodeVersion(): string {
+  return typeof process !== "undefined" && process.versions?.node
+    ? process.versions.node
+    : "unknown";
 }
 
 function assertNativeHost(): void {

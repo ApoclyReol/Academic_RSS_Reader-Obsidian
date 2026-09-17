@@ -9,17 +9,39 @@ export type DatabaseOperationKind =
 
 type ReleaseOperation = () => void;
 
+const CONFLICTING_OPERATION_KINDS: ReadonlyMap<
+  DatabaseOperationKind,
+  readonly DatabaseOperationKind[]
+> = new Map([
+  ["llm-review", ["recommendation"]],
+  ["recommendation", ["llm-review"]],
+]);
+
 export class DatabaseOperationCoordinator {
   private activeOperations = 0;
   private transitionActive = false;
+  private readonly activeKinds = new Map<DatabaseOperationKind, number>();
 
-  acquireOperation(_kind: DatabaseOperationKind): ReleaseOperation {
+  acquireOperation(kind: DatabaseOperationKind): ReleaseOperation {
     if (this.transitionActive) {
       throw new Error(t("ui.the_database_is_being_switched_or_restored_try_again_shortly"));
     }
+    const conflictingKind = CONFLICTING_OPERATION_KINDS.get(kind)?.find(
+      (candidate) => (this.activeKinds.get(candidate) ?? 0) > 0,
+    );
+    if (conflictingKind) {
+      throw new Error(t("ui.recommendation_and_llm_review_cannot_run_at_the_same_time"));
+    }
     this.activeOperations += 1;
+    this.activeKinds.set(kind, (this.activeKinds.get(kind) ?? 0) + 1);
     return this.releaseOnce(() => {
       this.activeOperations -= 1;
+      const activeCount = (this.activeKinds.get(kind) ?? 1) - 1;
+      if (activeCount > 0) {
+        this.activeKinds.set(kind, activeCount);
+      } else {
+        this.activeKinds.delete(kind);
+      }
     });
   }
 
@@ -48,6 +70,10 @@ export class DatabaseOperationCoordinator {
 
   isTransitioning(): boolean {
     return this.transitionActive;
+  }
+
+  isOperationActive(kind: DatabaseOperationKind): boolean {
+    return (this.activeKinds.get(kind) ?? 0) > 0;
   }
 
   private releaseOnce(release: () => void): ReleaseOperation {

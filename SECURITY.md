@@ -1,6 +1,6 @@
 # 安全与隐私
 
-适用于 Academic RSS Reader v1.4.1。
+适用于 Academic RSS Reader v1.7.1 当前代码基线。
 
 Academic RSS Reader 是本地桌面插件，不提供开发者中转服务器，不收集遥测。
 
@@ -37,8 +37,8 @@ LLM API Key 由 Obsidian SecretStorage 保存，插件的 `data.json` 只记录�
 ## 数据恢复
 
 - 备份与恢复目录必须位于当前 Vault 内。
-- 恢复前插件自动保存当前数据库恢复点。
-- 数据库无法打开或校验失败时，插件保留原文件、停止数据库相关服务，且不创建恢复库。
+- 恢复前插件会尝试自动保存当前数据库恢复点；即使已有持久化错误，恢复入口仍可等待未完成写入并尝试恢复有效备份。
+- 数据库无法打开或校验失败时，插件保留原文件并取消数据库相关后台任务，且不创建恢复库；当前网络请求会在返回后被 generation 检查丢弃。
 - 原生运行时不满足 Node.js 22.16、`DatabaseSync` 或 SQLite Backup API 时，插件阻止数据库载入，不回退到 `sql.js`。
-- v1.4 迁移和恢复使用 incoming/rollback 文件并处理 WAL/SHM sidecar；发现有效候选时才会自动恢复。
+- v1.4 迁移和恢复使用 incoming/rollback 文件并处理 WAL/SHM sidecar；正式库缺失或无效时，只有发现并通过完整校验的有效候选才会自动恢复。恢复替换失败时会保留并恢复 rollback 文件。
 - 历史身份整理只在 DOI、出版商稳定 ID 或规范化 URL 等高可信身份无冲突时合并，并保留既有 GUID、用户状态、翻译、推荐结果和订阅关联；双方都有 ScienceDirect PII 且不同的记录不会通过弱字段合并。

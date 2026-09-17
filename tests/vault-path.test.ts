@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   listDirectorySuggestions,
   resolveVaultDirectoryPath,
-} from "../src/services/vault-path";
+} from "../src/infrastructure/vault-path";
 import { MemoryAdapter } from "./helpers/memory-adapter";
 
 describe("vault directory boundaries", () => {

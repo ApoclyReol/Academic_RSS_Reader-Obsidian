@@ -56,7 +56,7 @@ export class RssReaderSettingTab extends PluginSettingTab {
             desc: t(
               "ui.backups_are_stored_in_the_backups_subdirectory_of_the_current_data_direc",
             ),
-            visible: () => this.plugin.isDatabaseReady(),
+            visible: () => this.plugin.canRestoreDatabaseBackup(),
             render: (setting) => this.renderDatabaseProtection(setting),
           },
         ],
@@ -193,7 +193,7 @@ export class RssReaderSettingTab extends PluginSettingTab {
             control: {
               type: "text",
               key: "llmBaseUrl",
-              placeholder: "HTTPS://api.OpenAI.com/v1",
+              placeholder: t("ui.llm_endpoint_placeholder"),
             },
           },
           {
@@ -208,7 +208,7 @@ export class RssReaderSettingTab extends PluginSettingTab {
             control: {
               type: "text",
               key: "llmModel",
-              placeholder: "GPT-4.1-mini",
+              placeholder: t("ui.llm_model_placeholder"),
             },
           },
           {
@@ -375,7 +375,7 @@ export class RssReaderSettingTab extends PluginSettingTab {
 
     setting.addText((text) => {
       text
-        .setPlaceholder("Assets/RSS reader data")
+        .setPlaceholder(t("ui.data_directory_placeholder"))
         .setValue(dataDirectory)
         .onChange((value) => {
           selectedDirectory = value;
@@ -416,19 +416,25 @@ export class RssReaderSettingTab extends PluginSettingTab {
         }),
       );
     } else {
+      const databaseTransitioning =
+        this.plugin.databaseState === "initializing";
       setting.addButton((button) =>
-        button.setButtonText(t("ui.create_new_database")).onClick(() => {
-          this.runButtonAction(button.buttonEl, () =>
-            this.runDatabaseAction(() =>
-              this.plugin.createDatabase(selectedDirectory),
-            ),
-          );
-        }),
+        button
+          .setButtonText(t("ui.create_new_database"))
+          .setDisabled(databaseTransitioning)
+          .onClick(() => {
+            this.runButtonAction(button.buttonEl, () =>
+              this.runDatabaseAction(() =>
+                this.plugin.createDatabase(selectedDirectory),
+              ),
+            );
+          }),
       );
       setting.addButton((button) =>
         button
           .setButtonText(t("ui.load_database"))
           .setCta()
+          .setDisabled(databaseTransitioning)
           .onClick(() => {
             this.runButtonAction(button.buttonEl, () =>
               this.runDatabaseAction(() =>
@@ -468,12 +474,15 @@ export class RssReaderSettingTab extends PluginSettingTab {
 
   private renderDatabaseProtection(setting: Setting): void {
     setting.addButton((button) =>
-      button.setButtonText(t("ui.back_up_now")).onClick(() => {
-        this.runButtonAction(button.buttonEl, async () => {
-          const destination = await this.plugin.createManualBackup();
-          new Notice(t("database.backed_up", { destination }), 10_000);
-        });
-      }),
+      button
+        .setButtonText(t("ui.back_up_now"))
+        .setDisabled(!this.plugin.canRestoreDatabaseBackup())
+        .onClick(() => {
+          this.runButtonAction(button.buttonEl, async () => {
+            const destination = await this.plugin.createManualBackup();
+            new Notice(t("database.backed_up", { destination }), 10_000);
+          });
+        }),
     );
     setting.addButton((button) =>
       button.setButtonText(t("ui.restore_latest_backup")).onClick(() => {

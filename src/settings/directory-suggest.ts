@@ -4,7 +4,7 @@ import {
   type DataAdapter,
 } from "obsidian";
 
-import { listDirectorySuggestions } from "../services/vault-path";
+import { listDirectorySuggestions } from "../infrastructure/vault-path";
 
 export class DirectorySuggest extends AbstractInputSuggest<string> {
   limit = 30;

@@ -22,7 +22,7 @@ import {
 import { RssRepository } from "./repositories/rss-repository";
 import { RssReaderSettingTab } from "./settings/rss-reader-setting-tab";
 import { FeedService } from "./services/feed-service";
-import { DatabaseOperationCoordinator } from "./services/database-operation-coordinator";
+import { DatabaseOperationCoordinator } from "./infrastructure/database-operation-coordinator";
 import { LlmService } from "./services/llm-service";
 import { RecommendationService } from "./services/recommendation-service";
 import { GoogleWebTranslationProvider } from "./services/translation-provider";
@@ -30,7 +30,7 @@ import {
   TranslationNoticeError,
   TranslationService,
 } from "./services/translation-service";
-import { resolveVaultDirectoryPath } from "./services/vault-path";
+import { resolveVaultDirectoryPath } from "./infrastructure/vault-path";
 import { RssReaderView } from "./views/rss-reader-view";
 import type { TranslationChange } from "./services/translation-service";
 
@@ -58,6 +58,9 @@ export default class RssReaderPlugin extends Plugin {
   private context: ServiceContext | null = null;
   private settingTab: RssReaderSettingTab | null = null;
   private automaticUpdateStarted = false;
+  private lifecycleActive = false;
+  private lifecycleCompletion: Promise<void> | null = null;
+  private unloading = false;
   private readonly operationCoordinator =
     new DatabaseOperationCoordinator();
   private static readonly LLM_SECRET_ID =
@@ -119,8 +122,14 @@ export default class RssReaderPlugin extends Plugin {
   }
 
   onunload(): void {
+    this.unloading = true;
     this.settingTab = null;
-    void this.disposeContext(this.context).catch(() => undefined);
+    const lifecycleCompletion = this.lifecycleCompletion;
+    void (lifecycleCompletion ?? Promise.resolve()).then(async () => {
+      const context = this.context;
+      this.context = null;
+      await this.disposeContext(context).catch(() => undefined);
+    });
   }
 
   async loadSettings(): Promise<void> {
@@ -169,7 +178,12 @@ export default class RssReaderPlugin extends Plugin {
   }
 
   isDatabaseReady(): boolean {
-    return this.databaseState === "ready" && this.context !== null;
+    return (
+      !this.unloading &&
+      !this.lifecycleActive &&
+      this.databaseState === "ready" &&
+      this.context !== null
+    );
   }
 
   getVaultAdapter(): typeof this.app.vault.adapter {
@@ -181,10 +195,23 @@ export default class RssReaderPlugin extends Plugin {
   }
 
   getCurrentBackupDirectory(): string | null {
-    if (!this.isDatabaseReady()) {
+    if (
+      this.unloading ||
+      this.context === null ||
+      (this.databaseState !== "ready" && this.databaseState !== "error")
+    ) {
       return null;
     }
     return databasePaths(this.settings.dataDirectory).backupDirectory;
+  }
+
+  canRestoreDatabaseBackup(): boolean {
+    return (
+      !this.unloading &&
+      !this.lifecycleActive &&
+      this.context !== null &&
+      (this.databaseState === "ready" || this.databaseState === "error")
+    );
   }
 
   async inspectDataDirectory(
@@ -200,8 +227,14 @@ export default class RssReaderPlugin extends Plugin {
   }
 
   prepareDatabaseOnViewOpen(): void {
+    if (this.unloading) {
+      return;
+    }
     if (this.isDatabaseReady()) {
       this.startAutomaticUpdateOnViewOpen();
+      return;
+    }
+    if (this.context || this.lifecycleActive) {
       return;
     }
     if (
@@ -218,6 +251,7 @@ export default class RssReaderPlugin extends Plugin {
   }
 
   async createDatabase(directory: string): Promise<void> {
+    this.assertDatabaseOperationAvailable();
     if (this.isDatabaseReady()) {
       throw new Error(t("ui.a_database_is_already_running_use_the_data_directory_switch_controls"));
     }
@@ -239,6 +273,7 @@ export default class RssReaderPlugin extends Plugin {
   }
 
   async loadDatabase(directory: string): Promise<void> {
+    this.assertDatabaseOperationAvailable();
     const normalized = normalizeDirectory(directory);
     if (this.isDatabaseReady()) {
       if (normalized === this.settings.dataDirectory) {
@@ -265,11 +300,12 @@ export default class RssReaderPlugin extends Plugin {
     directory: string,
     mode: DirectorySwitchMode,
   ): Promise<void> {
-    const current = this.requireContext();
-    const releaseTransition =
-      this.operationCoordinator.acquireTransition();
+    const releaseLifecycle = this.beginLifecycleOperation();
+    let releaseTransition: (() => void) | null = null;
     let next: ServiceContext | null = null;
     try {
+      const current = this.requireContext();
+      releaseTransition = this.operationCoordinator.acquireTransition();
       const normalized = normalizeDirectory(directory);
       if (normalized === this.settings.dataDirectory) {
         throw new Error(t("ui.the_selected_directory_is_already_the_current_data_directory"));
@@ -299,9 +335,12 @@ export default class RssReaderPlugin extends Plugin {
       }
 
       await this.createProtectionBackup("before-switch");
+      this.assertPluginActive();
       await current.database.drain();
+      this.assertPluginActive();
       if (mode === "migrate") {
         await current.database.backup(targetPaths.databasePath);
+        this.assertPluginActive();
         const copied = await inspectDatabaseFile(
           this.app.vault.adapter,
           targetPaths.databasePath,
@@ -312,7 +351,9 @@ export default class RssReaderPlugin extends Plugin {
       }
 
       next = await this.buildContext(targetPaths.databasePath, false);
+      this.assertPluginActive();
       await this.saveData({ ...this.settings, dataDirectory: normalized });
+      this.assertPluginActive();
       const previous = this.context;
       this.context = next;
       next = null;
@@ -323,25 +364,43 @@ export default class RssReaderPlugin extends Plugin {
       this.refreshSettings();
       await this.disposeContext(previous);
     } finally {
-      if (next) {
-        await this.disposeContext(next);
+      try {
+        if (next) {
+          await this.disposeContext(next);
+        }
+      } finally {
+        releaseTransition?.();
+        releaseLifecycle();
+        if (!this.unloading) {
+          this.context?.translationService.resume();
+        }
       }
-      releaseTransition();
-      this.context?.translationService.resume();
     }
-    await this.refreshViews();
+    if (!this.unloading) {
+      await this.refreshViews();
+    }
   }
 
   async createManualBackup(): Promise<string> {
-    return this.createProtectionBackup("manual");
+    const releaseLifecycle = this.beginLifecycleOperation();
+    let releaseTransition: (() => void) | null = null;
+    try {
+      releaseTransition = this.operationCoordinator.acquireTransition();
+      return await this.createProtectionBackup("manual", true);
+    } finally {
+      releaseTransition?.();
+      releaseLifecycle();
+    }
   }
 
   async restoreLatestDatabaseBackup(): Promise<string> {
-    const context = this.requireContext();
-    const releaseTransition =
-      this.operationCoordinator.acquireTransition();
+    const releaseLifecycle = this.beginLifecycleOperation();
+    let releaseTransition: (() => void) | null = null;
+    let context: ServiceContext | null = null;
     let restoredSource!: string;
     try {
+      context = this.requireContext({ allowDatabaseError: true });
+      releaseTransition = this.operationCoordinator.acquireTransition();
       await Promise.all([
         context.feedService.stop(),
         context.recommendationService.stop(),
@@ -388,18 +447,26 @@ export default class RssReaderPlugin extends Plugin {
       if (!source) {
         throw new Error(t("ui.no_valid_database_backup_was_found_in_the_current_data_directory_s_backu"));
       }
-      await this.createProtectionBackup("before-restore");
-      await context.database.drain();
+      await this.createProtectionBackup("before-restore", true);
+      this.assertPluginActive();
       await context.database.restoreFromFile(source);
+      this.assertPluginActive();
       await context.translationService.initialize();
+      this.databaseState = "ready";
       this.databaseError = null;
+      this.automaticUpdateStarted = false;
       restoredSource = source;
     } finally {
-      releaseTransition();
-      context.llmService.resume();
-      context.translationService.resume();
+      releaseTransition?.();
+      releaseLifecycle();
+      if (!this.unloading) {
+        context?.llmService.resume();
+        context?.translationService.resume();
+      }
     }
-    await this.refreshViews();
+    if (!this.unloading) {
+      await this.refreshViews();
+    }
     return restoredSource;
   }
 
@@ -451,6 +518,9 @@ export default class RssReaderPlugin extends Plugin {
       await this.loadDatabase(directory);
       this.startAutomaticUpdateOnViewOpen();
     } catch (error) {
+      if (this.unloading) {
+        return;
+      }
       this.databaseState = "error";
       this.databaseError =
         error instanceof Error ? error.message : String(error);
@@ -467,36 +537,52 @@ export default class RssReaderPlugin extends Plugin {
     directory: string,
     createIfMissing: boolean,
   ): Promise<void> {
-    this.databaseState = "initializing";
-    this.databaseError = null;
-    this.refreshSettings();
-    await this.refreshViews();
-    const path = databasePaths(
-      await this.resolveVaultDirectory(directory),
-    ).databasePath;
-    const previous = this.context;
+    const releaseLifecycle = this.beginLifecycleOperation();
+    let releaseTransition: (() => void) | null = null;
     let next: ServiceContext | null = null;
     try {
+      releaseTransition = this.operationCoordinator.acquireTransition();
+      this.databaseState = "initializing";
+      this.databaseError = null;
+      this.refreshSettings();
+      await this.refreshViews();
+      this.assertPluginActive();
+      const path = databasePaths(
+        await this.resolveVaultDirectory(directory),
+      ).databasePath;
+      const previous = this.context;
+      this.context = null;
+      await this.disposeContext(previous).catch(() => undefined);
+      releaseTransition();
+      releaseTransition = null;
+      this.assertPluginActive();
       next = await this.buildContext(path, createIfMissing);
+      this.assertPluginActive();
       await this.saveData({ ...this.settings, dataDirectory: directory });
+      this.assertPluginActive();
       this.context = next;
       next = null;
       this.settings.dataDirectory = directory;
       this.databaseState = "ready";
       this.automaticUpdateStarted = false;
       this.refreshSettings();
-      if (previous && previous !== this.context) {
-        await this.disposeContext(previous).catch(() => undefined);
+      if (!this.unloading) {
+        await this.refreshViews();
       }
-      await this.refreshViews();
     } catch (error) {
-      await this.disposeContext(next);
+      await this.disposeContext(next).catch(() => undefined);
+      if (this.unloading) {
+        throw error;
+      }
       this.databaseState = "error";
       this.databaseError =
         error instanceof Error ? error.message : String(error);
       this.refreshSettings();
       await this.refreshViews();
       throw error;
+    } finally {
+      releaseTransition?.();
+      releaseLifecycle();
     }
   }
 
@@ -614,8 +700,11 @@ export default class RssReaderPlugin extends Plugin {
     }
   }
 
-  private async createProtectionBackup(prefix: string): Promise<string> {
-    const context = this.requireContext();
+  private async createProtectionBackup(
+    prefix: string,
+    allowDatabaseError = false,
+  ): Promise<string> {
+    const context = this.requireContext({ allowDatabaseError });
     const backupDirectory = this.getCurrentBackupDirectory();
     if (!backupDirectory) {
       throw new Error(t("ui.configure_and_load_a_database_first"));
@@ -675,19 +764,73 @@ export default class RssReaderPlugin extends Plugin {
     databasePath: string,
     error: Error,
   ): void {
-    if (this.context?.database.path !== databasePath) {
+    if (this.unloading || this.context?.database.path !== databasePath) {
       return;
     }
     this.databaseState = "error";
     this.databaseError = error.message;
+    this.automaticUpdateStarted = false;
     this.refreshSettings();
-    void this.context.translationService.stop();
+    this.context.feedService.cancelUpdates();
+    this.context.recommendationService.cancelTraining();
+    this.context.translationService.cancel();
+    this.context.llmService.cancel();
     new Notice(error.message, 0);
     void this.refreshViews().catch(() => undefined);
   }
 
-  private requireContext(): ServiceContext {
-    if (!this.context || this.databaseState !== "ready") {
+  private assertDatabaseOperationAvailable(): void {
+    if (this.unloading) {
+      throw new Error(t("ui.reader_is_being_unloaded"));
+    }
+    if (this.lifecycleActive || this.databaseState === "initializing") {
+      throw new Error(t("ui.the_database_is_being_switched_or_restored_try_again_shortly"));
+    }
+  }
+
+  private assertPluginActive(): void {
+    if (this.unloading) {
+      throw new Error(t("ui.reader_is_being_unloaded"));
+    }
+  }
+
+  private beginLifecycleOperation(): () => void {
+    this.assertPluginActive();
+    if (this.lifecycleActive) {
+      throw new Error(t("ui.the_database_is_being_switched_or_restored_try_again_shortly"));
+    }
+    this.lifecycleActive = true;
+    let resolveCompletion!: () => void;
+    const completion = new Promise<void>((resolve) => {
+      resolveCompletion = resolve;
+    });
+    this.lifecycleCompletion = completion;
+    let released = false;
+    return () => {
+      if (released) {
+        return;
+      }
+      released = true;
+      this.lifecycleActive = false;
+      if (this.lifecycleCompletion === completion) {
+        this.lifecycleCompletion = null;
+      }
+      resolveCompletion();
+    };
+  }
+
+  private requireContext(
+    options: { allowDatabaseError?: boolean } = {},
+  ): ServiceContext {
+    if (this.unloading) {
+      throw new Error(t("ui.reader_is_being_unloaded"));
+    }
+    const usableAfterDatabaseError =
+      options.allowDatabaseError && this.databaseState === "error";
+    if (
+      !this.context ||
+      (this.databaseState !== "ready" && !usableAfterDatabaseError)
+    ) {
       throw new Error(t("ui.select_and_load_a_data_directory_in_the_reader_settings_first"));
     }
     return this.context;

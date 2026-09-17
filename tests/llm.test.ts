@@ -125,6 +125,49 @@ describe("LLM service safety and lifecycle", () => {
     expect(saveLlmReview).not.toHaveBeenCalled();
   });
 
+  it("rejects a second review while the first review is active", async () => {
+    const request = vi.mocked(requestUrl);
+    request.mockReset();
+    let resolveRequest!: (response: unknown) => void;
+    request.mockReturnValue(
+      new Promise((resolve) => {
+        resolveRequest = resolve;
+      }) as never,
+    );
+    const service = new LlmService(
+      {
+        listPendingLlmItems: () => [{
+          id: 1,
+          title: "Title",
+          summary: "Abstract",
+          keywordScore: 50,
+        }],
+        saveLlmReview: vi.fn(async () => undefined),
+      } as unknown as RssRepository,
+      () => ({
+        ...DEFAULT_SETTINGS,
+        llmBaseUrl: "https://api.example.com/v1",
+        llmModel: "test-model",
+      }),
+      () => "secret",
+      undefined,
+      timerWindow,
+    );
+
+    const first = service.reviewPending();
+    await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
+    await expect(service.reviewPending()).rejects.toThrow(
+      "LLM 复核已经在进行中",
+    );
+    service.cancel();
+    resolveRequest({
+      status: 200,
+      json: { choices: [{ message: { content: "high" } }] },
+      headers: {},
+    });
+    await expect(first).resolves.toEqual({ high: 0, low: 0, failed: 0 });
+  });
+
   it("times out a hanging request and applies the retry limit", async () => {
     const request = vi.mocked(requestUrl);
     request.mockReset();

@@ -3,12 +3,10 @@ import {
   type Database,
   type SqlValue,
 } from "../database/database";
-import { t } from "../i18n";
 import {
   canonicalizeLink,
   publisherIdentity,
-  stableGuid,
-} from "../services/rss-parser";
+} from "../models/item-identity";
 import {
   ITEM_STATUSES,
   type Feed,
@@ -23,332 +21,32 @@ import {
   type TranslationRecord,
   type TranslationStatus,
 } from "../models/domain";
+import {
+  ITEM_JOURNAL_SELECT,
+  ITEM_JOURNAL_VALUE,
+  INFERRED_FEED_JOURNAL_SELECT,
+  escapeLikePattern,
+  feedDisplayMetadata,
+  itemOrderBy,
+  searchTerms,
+  textValue,
+  type RepositoryRow,
+} from "./repository-helpers";
+import {
+  repairLegacyItemIdentity as repairLegacyItemIdentityInDatabase,
+  type LegacyIdentityRepairResult,
+} from "./legacy-identity-repair";
+import { toFeed, toItem, toTranslation } from "./row-mappers";
 
-type Row = Record<string, SqlValue>;
-
-function textValue(value: SqlValue, fallback = ""): string {
-  return typeof value === "string" || typeof value === "number" ||
-    typeof value === "bigint"
-    ? String(value)
-    : fallback;
-}
-
-const ITEM_JOURNAL_VALUE = `
-  COALESCE(
-    NULLIF(i.article_journal,''),
-    (
-      SELECT NULLIF(f.journal_name,'')
-      FROM item_feeds x JOIN feeds f ON f.id=x.feed_id
-      WHERE x.item_id=i.id AND NULLIF(f.journal_name,'') IS NOT NULL
-      ORDER BY x.first_seen_at, f.id
-      LIMIT 1
-    ),
-    ''
-  )`;
-
-const ITEM_JOURNAL_SELECT = `
-  ${ITEM_JOURNAL_VALUE} AS journal,
-  COALESCE((SELECT GROUP_CONCAT(f.name,' ')
-    FROM item_feeds x JOIN feeds f ON f.id=x.feed_id
-    WHERE x.item_id=i.id),'') AS feed_names`;
-
-const INFERRED_FEED_JOURNAL_SELECT = `
-  (
-    SELECT NULLIF(i.article_journal,'')
-    FROM item_feeds x
-    JOIN items i ON i.id=x.item_id
-    WHERE x.feed_id=f.id AND NULLIF(i.article_journal,'') IS NOT NULL
-    GROUP BY i.article_journal
-    ORDER BY COUNT(*) DESC, i.article_journal COLLATE NOCASE
-    LIMIT 1
-  ) AS inferred_journal`;
-
-function isMalformedImportedMetadata(value: string): boolean {
-  return /^(?:xmlUrl|htmlUrl)\s*=/i.test(value.trim());
-}
-
-function feedDisplayMetadata(
-  value: string,
-  inferredJournal: string,
-  feedUrl: string,
-): string {
-  if (!isMalformedImportedMetadata(value)) {
-    return value;
-  }
-  if (inferredJournal) {
-    return inferredJournal;
-  }
-  try {
-    return new URL(feedUrl).hostname.replace(/^www\./i, "");
-  } catch {
-    return value;
-  }
-}
-
-function statusPriority(status: ItemStatus): number {
-  return {
-    archived: 5,
-    interested: 4,
-    hidden: 3,
-    expired: 2,
-    unread: 1,
-  }[status];
-}
+type Row = RepositoryRow;
 
 const ITEM_STATUS_BATCH_SIZE = 500;
-
-function itemOrderBy(sort: ItemQuery["sort"]): string {
-  switch (sort ?? "relevance") {
-    case "title":
-      return "i.title COLLATE NOCASE ASC, i.id DESC";
-    case "updated":
-      return `
-        i.last_seen_at DESC,
-        COALESCE(i.pub_date,i.first_seen_at) DESC,
-        i.id DESC
-      `;
-    case "journal":
-      return `
-        ${ITEM_JOURNAL_VALUE} COLLATE NOCASE ASC,
-        i.title COLLATE NOCASE ASC,
-        i.id DESC
-      `;
-    case "relevance":
-      return `
-        CASE rs.final_tier WHEN 'high' THEN 0 WHEN 'pending' THEN 1
-          WHEN 'low' THEN 3 ELSE 2 END,
-        COALESCE(rs.keyword_score,-1) DESC,
-        COALESCE(i.pub_date,i.first_seen_at) DESC,
-        i.id DESC
-      `;
-  }
-}
-
-function searchTerms(value: string | undefined): string[] {
-  const terms = value?.normalize("NFKC").toLocaleLowerCase()
-    .match(/[\p{L}\p{N}]+/gu) ?? [];
-  return [...new Set(terms)];
-}
-
-function escapeLikePattern(value: string): string {
-  return value.replace(/[\\%_]/g, "\\$&");
-}
 
 export class RssRepository {
   constructor(private readonly database: RssDatabase) {}
 
-  async repairLegacyItemIdentity(): Promise<{
-    mergedGroups: number;
-    removedItems: number;
-    rekeyedItems: number;
-  }> {
-    if (this.getMetadata("legacy_identity_repair_v3") === "completed") {
-      return { mergedGroups: 0, removedItems: 0, rekeyedItems: 0 };
-    }
-    const rows = this.database.query<Row>(
-      `
-      SELECT i.*, f.name AS feed_name, f.journal_name AS feed_journal,
-             (SELECT COUNT(*) FROM item_feeds x WHERE x.item_id=i.id) AS feed_count
-      FROM items i
-      LEFT JOIN item_feeds ifd ON ifd.item_id=i.id
-      LEFT JOIN feeds f ON f.id=ifd.feed_id
-      ORDER BY i.id
-      `,
-    );
-    const identities = new Map<
-      string,
-      Array<{
-        id: number;
-        currentGuid: string;
-        status: ItemStatus;
-        lastSeenAt: string;
-        feedName: string;
-        link: string;
-        imageUrl: string;
-        isLegacyGuid: boolean;
-      }>
-    >();
-    for (const row of rows) {
-      if (Number(row.feed_count) !== 1) {
-        continue;
-      }
-      const feedName = textValue(row.feed_name);
-      const articleJournal = textValue(row.article_journal ?? row.journal);
-      const feedJournal = textValue(row.feed_journal);
-      const identity = {
-        id: Number(row.id),
-        currentGuid: textValue(row.stable_guid),
-        status: textValue(row.item_status) as ItemStatus,
-        lastSeenAt: textValue(row.last_seen_at),
-        feedName,
-        link: textValue(row.link),
-        imageUrl: textValue(row.image_url),
-        isLegacyGuid:
-          textValue(row.stable_guid).startsWith("doi:") ||
-          textValue(row.stable_guid).startsWith("cnki-local:") ||
-          textValue(row.stable_guid).startsWith("rss:") ||
-          textValue(row.stable_guid).startsWith("legacy:"),
-      };
-      const canonicalGuid = stableGuid({
-        title: textValue(row.title),
-        journal: articleJournal || feedJournal || feedName,
-        year: textValue(row.year),
-        authors: textValue(row.authors),
-        doi: textValue(row.doi),
-        link: textValue(row.link),
-      });
-      const link = canonicalizeLink(textValue(row.link));
-      const publisherId = publisherIdentity(link);
-      const doi = textValue(row.doi)
-        .trim()
-        .toLocaleLowerCase()
-        .replace(/^doi:\s*/i, "");
-      const repairIdentity = doi
-        ? `doi:${doi}`
-        : publisherId ||
-          (link ? `url:${link}|${textValue(row.title_norm)}` : canonicalGuid);
-      const group = identities.get(repairIdentity) ?? [];
-      group.push(identity);
-      identities.set(repairIdentity, group);
-    }
-
-    return this.database.write((db) => {
-      let mergedGroups = 0;
-      let removedItems = 0;
-      let rekeyedItems = 0;
-      const removedIds = new Set<number>();
-      for (const candidates of identities.values()) {
-        const unique = [
-          ...new Map(
-            candidates
-              .filter((item) => !removedIds.has(item.id))
-              .map((item) => [item.id, item]),
-          ).values(),
-        ];
-        const ranked = [...unique].sort(
-          (left, right) =>
-            statusPriority(right.status) - statusPriority(left.status) ||
-            right.lastSeenAt.localeCompare(left.lastSeenAt) ||
-            left.id - right.id,
-        );
-        if (unique.length === 0) {
-          continue;
-        }
-        const winner = ranked[0];
-        if (!winner) {
-          continue;
-        }
-        const preservedStatus = ranked[0]?.status ?? winner.status;
-        const losers = unique.filter((item) => item.id !== winner.id);
-        if (losers.length > 0) {
-          const placeholders = losers
-            .map((_, index) => `$loser${index}`)
-            .join(",");
-          const params = Object.fromEntries(
-            losers.map((item, index) => [`$loser${index}`, item.id]),
-          );
-          const allParams = { ...params, $winner: winner.id };
-          db.run(
-            `
-            INSERT OR IGNORE INTO item_feeds(
-              item_id,feed_id,first_seen_at,last_seen_at
-            )
-            SELECT $winner,feed_id,first_seen_at,last_seen_at
-            FROM item_feeds WHERE item_id IN (${placeholders})
-            `,
-            allParams,
-          );
-          db.run(
-            `
-            INSERT OR IGNORE INTO translations(
-              item_id,field,source_text,translated_text,source_language,
-              target_language,provider,source_hash,status,attempt_count,
-              last_error,translated_at
-            )
-            SELECT $winner,field,source_text,translated_text,source_language,
-                   target_language,provider,source_hash,status,attempt_count,
-                   last_error,translated_at
-            FROM translations
-            WHERE item_id IN (${placeholders})
-            ORDER BY CASE status WHEN 'succeeded' THEN 0 ELSE 1 END,
-                     translated_at DESC
-            `,
-            allParams,
-          );
-          db.run(
-            `
-            INSERT OR IGNORE INTO recommendation_scores(
-              item_id,keyword_score,keyword_tier,final_tier,llm_tier,
-              llm_error,matched_keywords,model_version,content_hash,
-              scored_at,llm_reviewed_at
-            )
-            SELECT $winner,keyword_score,keyword_tier,final_tier,llm_tier,
-                   llm_error,matched_keywords,model_version,content_hash,
-                   scored_at,llm_reviewed_at
-            FROM recommendation_scores
-            WHERE item_id IN (${placeholders})
-            ORDER BY scored_at DESC LIMIT 1
-            `,
-            allParams,
-          );
-          db.run(
-            `
-            UPDATE items
-            SET first_seen_at=(
-                  SELECT MIN(first_seen_at) FROM items
-                  WHERE id=$winner OR id IN (${placeholders})
-                ),
-                last_seen_at=(
-                  SELECT MAX(last_seen_at) FROM items
-                  WHERE id=$winner OR id IN (${placeholders})
-                ),
-                image_url=COALESCE(
-                  NULLIF(image_url,''),
-                  (
-                    SELECT image_url FROM items
-                    WHERE (id=$winner OR id IN (${placeholders}))
-                      AND NULLIF(image_url,'') IS NOT NULL
-                    ORDER BY CASE WHEN id=$winner THEN 0 ELSE 1 END, id
-                    LIMIT 1
-                  )
-                ),
-                item_status=$status
-            WHERE id=$winner
-            `,
-            { ...allParams, $status: preservedStatus },
-          );
-          db.run(
-            `DELETE FROM translations WHERE item_id IN (${placeholders})`,
-            params,
-          );
-          db.run(
-            `DELETE FROM recommendation_scores WHERE item_id IN (${placeholders})`,
-            params,
-          );
-          db.run(
-            `DELETE FROM item_feeds WHERE item_id IN (${placeholders})`,
-            params,
-          );
-          db.run(
-            `DELETE FROM items WHERE id IN (${placeholders})`,
-            params,
-          );
-          mergedGroups += 1;
-          removedItems += losers.length;
-          for (const loser of losers) {
-            removedIds.add(loser.id);
-          }
-        }
-      }
-      db.run(
-        `
-        INSERT INTO app_metadata(key,value)
-        VALUES ('legacy_identity_repair_v3','completed')
-        ON CONFLICT(key) DO UPDATE SET value=excluded.value
-        `,
-      );
-      return { mergedGroups, removedItems, rekeyedItems };
-    });
+  async repairLegacyItemIdentity(): Promise<LegacyIdentityRepairResult> {
+    return repairLegacyItemIdentityInDatabase(this.database);
   }
 
   listFeeds(includeDisabled = true): Feed[] {
@@ -364,7 +62,7 @@ export class RssRepository {
         ORDER BY f.name COLLATE NOCASE
         `,
       )
-      .map((row) => this.toFeed(row));
+      .map(toFeed);
   }
 
   getFeed(feedId: number): Feed | null {
@@ -379,7 +77,7 @@ export class RssRepository {
       `,
       { $id: feedId },
     );
-    return row ? this.toFeed(row) : null;
+    return row ? toFeed(row) : null;
   }
 
   async addFeed(input: FeedInput): Promise<number> {
@@ -604,7 +302,7 @@ export class RssRepository {
         `,
         params,
       )
-      .map((row) => this.toItem(row));
+      .map(toItem);
   }
 
   getItem(itemId: number, targetLanguage = "zh-CN"): RssItem | null {
@@ -625,7 +323,7 @@ export class RssRepository {
       `,
       { $id: itemId, $target: targetLanguage },
     );
-    return row ? this.toItem(row) : null;
+    return row ? toItem(row) : null;
   }
 
   countItems(query?: Partial<ItemQuery>): number {
@@ -777,7 +475,7 @@ export class RssRepository {
       `,
       { $itemId: itemId, $field: field, $target: targetLanguage },
     );
-    return row ? this.toTranslation(row) : null;
+    return row ? toTranslation(row) : null;
   }
 
   listTranslationsByStatus(
@@ -791,7 +489,7 @@ export class RssRepository {
       .query<Row>(
         `SELECT * FROM translations WHERE status IN (${values}) ORDER BY item_id`,
       )
-      .map((row) => this.toTranslation(row));
+      .map(toTranslation);
   }
 
   async upsertTranslationTask(record: TranslationRecord): Promise<void> {
@@ -890,7 +588,7 @@ export class RssRepository {
         ORDER BY i.id
         `,
       )
-      .map((row) => this.toItem(row));
+      .map(toItem);
   }
 
   listUnreadItems(): RssItem[] {
@@ -906,7 +604,7 @@ export class RssRepository {
         ORDER BY i.id
         `,
       )
-      .map((row) => this.toItem(row));
+      .map(toItem);
   }
 
   getRecommendationSummary(): RecommendationSummary {
@@ -1220,7 +918,7 @@ export class RssRepository {
         ORDER BY i.id
         `,
       )
-      .map((row) => this.toItem(row));
+      .map(toItem);
   }
 
   async saveLlmReview(
@@ -1566,109 +1264,4 @@ export class RssRepository {
     return Number(this.singleValue(db, "SELECT last_insert_rowid()"));
   }
 
-  private toFeed(row: Row): Feed {
-    const inferredJournal = textValue(row.inferred_journal);
-    const feedUrl = textValue(row.url);
-    const name = textValue(row.name);
-    const journalName = textValue(row.journal_name ?? row.name);
-    return {
-      id: Number(row.id),
-      name,
-      journalName,
-      displayJournalName: feedDisplayMetadata(
-        journalName,
-        inferredJournal,
-        feedUrl,
-      ),
-      url: feedUrl,
-      enabled: Boolean(row.enabled),
-      createdAt: textValue(row.created_at),
-      updatedAt: textValue(row.updated_at),
-      lastCheckedAt: row.last_checked_at
-        ? textValue(row.last_checked_at)
-        : null,
-      lastError: row.last_error ? textValue(row.last_error) : null,
-      etag: row.etag ? textValue(row.etag) : null,
-      lastModified: row.last_modified ? textValue(row.last_modified) : null,
-      lastSuccessAt: row.last_success_at
-        ? textValue(row.last_success_at)
-        : null,
-      consecutiveFailures: Number(row.consecutive_failures ?? 0),
-      healthStatus: (row.health_status ?? "healthy") as Feed["healthStatus"],
-      nextAutoUpdateAt: row.next_auto_update_at
-        ? textValue(row.next_auto_update_at)
-        : null,
-      itemCount: Number(row.item_count ?? 0),
-    };
-  }
-
-  private toItem(row: Row): RssItem {
-    const status = textValue(row.item_status);
-    if (!ITEM_STATUSES.includes(status as ItemStatus)) {
-      throw new Error(t("database.unknown_item_status", { status }));
-    }
-    return {
-      id: Number(row.id),
-      stableGuid: textValue(row.stable_guid),
-      title: textValue(row.title),
-      titleNorm: textValue(row.title_norm),
-      authors: textValue(row.authors),
-      journal: textValue(row.journal ?? row.article_journal),
-      feedNames: textValue(row.feed_names),
-      year: textValue(row.year),
-      doi: textValue(row.doi),
-      link: textValue(row.link),
-      pubDate: textValue(row.pub_date),
-      summary: textValue(row.summary),
-      imageUrl: row.image_url ? textValue(row.image_url) : null,
-      firstSeenAt: textValue(row.first_seen_at),
-      lastSeenAt: textValue(row.last_seen_at),
-      itemStatus: status as ItemStatus,
-      finalTier: row.final_tier
-        ? (textValue(row.final_tier) as RssItem["finalTier"])
-        : null,
-      keywordScore:
-        row.keyword_score === null || row.keyword_score === undefined
-          ? null
-          : Number(row.keyword_score),
-      llmTier: row.llm_tier
-        ? (textValue(row.llm_tier) as RssItem["llmTier"])
-        : null,
-      matchedKeywords: textValue(row.matched_keywords, "[]"),
-      translatedTitle: row.translated_title
-        ? textValue(row.translated_title)
-        : null,
-      translatedAbstract: row.translated_abstract
-        ? textValue(row.translated_abstract)
-        : null,
-      titleTranslationStatus: row.title_translation_status
-        ? (textValue(row.title_translation_status) as TranslationStatus)
-        : null,
-      abstractTranslationStatus: row.abstract_translation_status
-        ? (textValue(row.abstract_translation_status) as TranslationStatus)
-        : null,
-    };
-  }
-
-  private toTranslation(row: Row): TranslationRecord {
-    return {
-      itemId: Number(row.item_id),
-      field: textValue(row.field) as TranslationField,
-      sourceText: textValue(row.source_text),
-      translatedText: row.translated_text
-        ? textValue(row.translated_text)
-        : null,
-      sourceLanguage: row.source_language
-        ? textValue(row.source_language)
-        : null,
-      targetLanguage: textValue(row.target_language),
-      provider: "google-web",
-      sourceHash: textValue(row.source_hash),
-      status: textValue(row.status) as TranslationStatus,
-      attemptCount: Number(row.attempt_count),
-      lastError: row.last_error ? textValue(row.last_error) : null,
-      translatedAt:
-        row.translated_at === null ? null : Number(row.translated_at),
-    };
-  }
 }

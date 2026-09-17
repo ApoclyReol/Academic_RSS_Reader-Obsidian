@@ -54,31 +54,74 @@ export const DEFAULT_SETTINGS: RssReaderSettings = {
   recommendationHighThreshold: null,
 };
 
-const CARD_DISPLAY_SETTING_KEYS = [
-  "cardShowJournal",
-  "cardShowAuthors",
-  "cardShowPublicationDate",
-  "cardShowDoi",
-  "cardShowAbstract",
-  "cardShowGraphicalAbstract",
-] as const;
-
 export function normalizeSettings(
   stored: Partial<RssReaderSettings>,
 ): RssReaderSettings {
-  const normalized = {
-    ...DEFAULT_SETTINGS,
-    ...stored,
+  const stringValue = (value: unknown, fallback: string): string =>
+    typeof value === "string" ? value : fallback;
+  const booleanValue = (value: unknown, fallback: boolean): boolean =>
+    typeof value === "boolean" ? value : fallback;
+  const positiveIntegerValue = (value: unknown, fallback: number): number =>
+    typeof value === "number" && Number.isInteger(value) && value >= 1
+      ? value
+      : fallback;
+  const thresholdValue = (value: unknown): number | null =>
+    typeof value === "number" && Number.isFinite(value)
+      ? Math.max(0, Math.min(100, value))
+      : null;
+
+  return {
+    dataDirectory: stringValue(
+      stored.dataDirectory,
+      DEFAULT_SETTINGS.dataDirectory,
+    ),
+    autoUpdateOnStartup: booleanValue(
+      stored.autoUpdateOnStartup,
+      DEFAULT_SETTINGS.autoUpdateOnStartup,
+    ),
+    hiddenExpireDays: positiveIntegerValue(
+      stored.hiddenExpireDays,
+      DEFAULT_SETTINGS.hiddenExpireDays,
+    ),
+    cardShowJournal: booleanValue(
+      stored.cardShowJournal,
+      DEFAULT_SETTINGS.cardShowJournal,
+    ),
+    cardShowAuthors: booleanValue(
+      stored.cardShowAuthors,
+      DEFAULT_SETTINGS.cardShowAuthors,
+    ),
+    cardShowPublicationDate: booleanValue(
+      stored.cardShowPublicationDate,
+      DEFAULT_SETTINGS.cardShowPublicationDate,
+    ),
+    cardShowDoi: booleanValue(stored.cardShowDoi, DEFAULT_SETTINGS.cardShowDoi),
+    cardShowAbstract: booleanValue(
+      stored.cardShowAbstract,
+      DEFAULT_SETTINGS.cardShowAbstract,
+    ),
+    cardShowGraphicalAbstract: booleanValue(
+      stored.cardShowGraphicalAbstract,
+      DEFAULT_SETTINGS.cardShowGraphicalAbstract,
+    ),
+    targetLanguage: isSupportedTargetLanguage(stored.targetLanguage)
+      ? stored.targetLanguage
+      : DEFAULT_SETTINGS.targetLanguage,
+    googleTranslationDisclosureAccepted: booleanValue(
+      stored.googleTranslationDisclosureAccepted,
+      DEFAULT_SETTINGS.googleTranslationDisclosureAccepted,
+    ),
+    llmBaseUrl: stringValue(stored.llmBaseUrl, DEFAULT_SETTINGS.llmBaseUrl).trim(),
+    llmSecretId: stringValue(stored.llmSecretId, DEFAULT_SETTINGS.llmSecretId).trim(),
+    llmModel: stringValue(stored.llmModel, DEFAULT_SETTINGS.llmModel).trim(),
+    userInterest: stringValue(stored.userInterest, DEFAULT_SETTINGS.userInterest).trim(),
+    recommendationLowThreshold: thresholdValue(
+      stored.recommendationLowThreshold,
+    ),
+    recommendationHighThreshold: thresholdValue(
+      stored.recommendationHighThreshold,
+    ),
   };
-  for (const key of CARD_DISPLAY_SETTING_KEYS) {
-    if (typeof stored[key] !== "boolean") {
-      normalized[key] = DEFAULT_SETTINGS[key];
-    }
-  }
-  if (!isSupportedTargetLanguage(stored.targetLanguage)) {
-    normalized.targetLanguage = DEFAULT_SETTINGS.targetLanguage;
-  }
-  return normalized;
 }
 
 export function isSupportedTargetLanguage(

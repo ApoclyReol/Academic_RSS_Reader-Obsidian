@@ -1,6 +1,6 @@
 # 数据库设计
 
-本文描述 Academic RSS Reader v1.7.0 的有效 schema 5。schema 事实源为
+本文描述 Academic RSS Reader v1.7.1 的有效 schema 5。schema 事实源为
 `src/database/schema.ts`，业务 SQL 事实源为 `src/repositories/rss-repository.ts`。
 
 ## 存储位置与运行参数
@@ -302,8 +302,10 @@ schema 5 的主要变化：
 
 ### 手动与保护备份
 
-`RssDatabase.backup()` 先排空写队列，再调用 SQLite Backup API。完成后执行完整性与外键
-检查；无效备份会被删除。
+`RssDatabase.backup()` 先等待写队列结束，再调用 SQLite Backup API 写入临时文件。完成后执行
+完整性与外键检查，再以临时文件替换目标；无效临时备份会被删除，已有目标备份只有在新文件
+安装成功后才会替换。它使用 `waitForWrites()` 而不是会报告终态持久化错误的 `drain()`，因此
+数据库出现写入错误后仍可尝试创建保护备份或执行恢复；备份目标不得是当前打开的数据库。
 
 保护备份前缀包括：
 
@@ -321,14 +323,14 @@ schema 5 的主要变化：
 → WAL checkpoint 并关闭当前连接
 → 当前库改名为 .rollback
 → incoming 安装为正式库并校验
-→ 成功删除 rollback；失败恢复 rollback
+→ 成功打开新连接后删除 rollback；失败先关闭新连接，再恢复 rollback
 ```
 
 恢复和切换期间由 `DatabaseOperationCoordinator` 阻止后台任务进入。
 
 ### 启动异常恢复
 
-正式库无效时只检查受控候选：
+正式库无效或缺失时只检查受控候选：
 
 - `.tmp`
 - `.previous`

@@ -9,7 +9,7 @@ Academic RSS Reader 是一款面向学术文献初筛的 Obsidian 桌面插件�
 它关注的是“新文献到达”与“知道哪些值得进一步阅读”之间的初筛环节：减少重复整理，让你更快回到真正值得投入时间的文献上，而不是替代文献管理器或全文数据库。
 
 > [!IMPORTANT]
-> 当前推荐版本：**1.7.0**。本版本要求 Obsidian **1.13.0 或更高版本**，仅支持桌面端；实际运行还需要 Obsidian 内置的 Node.js **22.16 或更高版本**提供 `node:sqlite` 的 `DatabaseSync` 和 SQLite Backup API。安装或更新前，建议先升级到最新可用的 Obsidian 桌面版。
+> 当前推荐版本：**1.7.1**。本版本要求 Obsidian **1.13.0 或更高版本**，仅支持桌面端；实际运行还需要 Obsidian 内置的 Node.js **22.16 或更高版本**提供 `node:sqlite` 的 `DatabaseSync` 和 SQLite Backup API。安装或更新前，建议先升级到最新可用的 Obsidian 桌面版。
 
 ## 为什么使用 Academic RSS Reader
 
@@ -140,7 +140,7 @@ Academic RSS Reader 不要求注册账户，不运行遥测，也没有开发者
 - 标题翻译使用 Google 非正式网页接口。启用后，当前可见和预取的标题会由本机直接发送；接口可能限流或失效，译文也可能不准确，不应作为正式引用。请求会超时并按退避策略有限重试；连续失败后停止自动请求，失败任务可在网络恢复后手动重试。
 - 只有在你主动测试连接或复核待判断文献时才会发起 LLM 请求。请求会包含复核所需的文献信息和你填写的研究兴趣描述，并发送到你配置的服务地址。
 
-插件不会在启动时创建或打开数据库。只有在你选择 Vault 内的数据目录并明确执行创建或载入后，才会开始数据库操作。数据库保存使用经过校验的临时文件和上一版本保护文件；设置页可以手动创建保护备份，并恢复最近的有效备份。数据库主文件、WAL/SHM sidecar、临时文件和备份由桌面原生 SQLite 能力处理，其他 Vault 文件仍受 Obsidian `DataAdapter` 边界保护。
+插件不会在启动时创建或打开数据库。只有在你选择 Vault 内的数据目录并明确执行创建或载入后，才会开始数据库操作。数据库保存使用经过校验的临时文件和上一版本保护文件；设置页可以手动创建保护备份，并恢复最近的有效备份，即使数据库已报告持久化错误。数据库主文件、WAL/SHM sidecar、临时文件和备份由桌面原生 SQLite 能力处理，其他 Vault 文件仍受 Obsidian `DataAdapter` 边界保护。
 
 ## 兼容性与边界
 
@@ -159,6 +159,7 @@ Academic RSS Reader 不要求注册账户，不运行遥测，也没有开发者
 - [故障排查](docs/TROUBLESHOOTING.zh-CN.md)
 - [安全与隐私](SECURITY.md)
 - [版本记录](CHANGELOG.md)
+- [v1.7.1 发布说明](docs/V1_7_1_RELEASE.zh-CN.md)
 - [v1.7.0 发布说明](docs/V1_7_0_RELEASE.zh-CN.md)
 - [v1.6.3 发布说明](docs/V1_6_3_RELEASE.zh-CN.md)
 - [v1.6.2 发布说明](docs/V1_6_2_RELEASE.zh-CN.md)

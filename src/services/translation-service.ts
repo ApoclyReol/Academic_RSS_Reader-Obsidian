@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-
 import type {
   TranslationField,
   TranslationRecord,
@@ -7,7 +5,8 @@ import type {
 import { t } from "../i18n";
 import type { RssReaderSettings } from "../models/settings";
 import { RssRepository } from "../repositories/rss-repository";
-import type { DatabaseOperationCoordinator } from "./database-operation-coordinator";
+import type { DatabaseOperationCoordinator } from "../infrastructure/database-operation-coordinator";
+import { sha256 } from "../infrastructure/desktop-runtime";
 import { TranslationRequestError } from "./translation-error";
 import type {
   TranslationProvider,
@@ -128,11 +127,15 @@ export class TranslationService {
   }
 
   async stop(): Promise<void> {
+    this.cancel();
+    await this.processingPromise?.catch(() => undefined);
+  }
+
+  cancel(): void {
     this.stopped = true;
     this.generation += 1;
     this.queue = [];
     this.clearProcessingTimer();
-    await this.processingPromise?.catch(() => undefined);
   }
 
   isBusy(): boolean {
@@ -560,7 +563,7 @@ export class TranslationService {
 }
 
 export function hashText(text: string): string {
-  return createHash("sha256").update(text).digest("hex");
+  return sha256(text);
 }
 
 export function isTargetLanguage(text: string, target: string): boolean {

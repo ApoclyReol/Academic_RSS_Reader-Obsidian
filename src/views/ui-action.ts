@@ -23,3 +23,25 @@ export function executeUiAction(
       }
     });
 }
+
+export function runUiAction(
+  action: () => void | Promise<void>,
+  button?: HTMLButtonElement,
+  onError?: (error: unknown) => void,
+): void {
+  executeUiAction(
+    action,
+    button,
+    onError ?? defaultUiError,
+  );
+}
+
+export function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function defaultUiError(error: unknown): void {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports -- Keep the optional UI error reporter out of DOM-only tests and helpers.
+  const { Notice } = require("obsidian") as typeof import("obsidian");
+  new Notice(errorMessage(error), 10_000);
+}

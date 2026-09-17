@@ -10,7 +10,7 @@ import {
 import { RssDatabase } from "../src/database/database";
 import { DEFAULT_SETTINGS } from "../src/models/settings";
 import { RssRepository } from "../src/repositories/rss-repository";
-import { DatabaseOperationCoordinator } from "../src/services/database-operation-coordinator";
+import { DatabaseOperationCoordinator } from "../src/infrastructure/database-operation-coordinator";
 import { RecommendationService } from "../src/services/recommendation-service";
 import type {
   TranslationProvider,
@@ -60,6 +60,23 @@ describe("database lifecycle coordination", () => {
     );
     releaseTransition();
     expect(() => coordinator.acquireTransition()).not.toThrow();
+  });
+
+  it("prevents recommendation and LLM review from changing shared results concurrently", () => {
+    const coordinator = new DatabaseOperationCoordinator();
+    const releaseRecommendation = coordinator.acquireOperation("recommendation");
+    expect(() => coordinator.acquireOperation("llm-review")).toThrow(
+      "推荐更新与 LLM 复核不能同时进行",
+    );
+    releaseRecommendation();
+
+    const releaseLlmReview = coordinator.acquireOperation("llm-review");
+    expect(() => coordinator.acquireOperation("recommendation")).toThrow(
+      "推荐更新与 LLM 复核不能同时进行",
+    );
+    releaseLlmReview();
+    expect(coordinator.isOperationActive("recommendation")).toBe(false);
+    expect(coordinator.isOperationActive("llm-review")).toBe(false);
   });
 
   it("drains an in-flight save before allowing close", async () => {
@@ -131,6 +148,10 @@ describe("database lifecycle coordination", () => {
 
     const rebuilding = service.rebuild();
     await started;
+    expect(service.isBusy()).toBe(true);
+    await expect(service.rebuild()).rejects.toThrow(
+      "关键词推荐更新已经在进行中",
+    );
     const stopping = service.stop();
     releaseTraining();
     await stopping;

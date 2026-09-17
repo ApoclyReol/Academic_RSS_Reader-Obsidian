@@ -5,13 +5,13 @@ import type {
 } from "node:sqlite";
 
 import { t } from "../i18n";
-import type { DatabaseOperationCoordinator } from "../services/database-operation-coordinator";
+import type { DatabaseOperationCoordinator } from "../infrastructure/database-operation-coordinator";
 import {
   assertSqliteRuntime,
   loadFileSystemModule,
   loadPathModule,
-} from "../services/desktop-runtime";
-import { resolveVaultDirectoryPath } from "../services/vault-path";
+} from "../infrastructure/desktop-runtime";
+import { resolveVaultDirectoryPath } from "../infrastructure/vault-path";
 import {
   CREATE_SCHEMA_SQL,
   SCHEMA_MIGRATIONS,
@@ -174,17 +174,34 @@ export class RssDatabase {
     assertSqliteRuntime();
     const nativePath = this.nativePath();
     const exists = loadFileSystemModule().existsSync(nativePath);
-    if (!exists && options.createIfMissing === false) {
+    const canRecoverMissingPrimary =
+      !exists && hasNativeRecoveryCandidate(nativePath);
+    if (
+      !exists &&
+      options.createIfMissing === false &&
+      !canRecoverMissingPrimary
+    ) {
       throw new Error(t("ui.the_selected_directory_does_not_contain_rss_reader_sqlite3"));
+    }
+
+    if (canRecoverMissingPrimary) {
+      const recovery = recoverNativeDatabaseFile(nativePath);
+      this.recoveryResult = {
+        recovered: true,
+        source: recovery.source,
+        primaryError: recovery.primaryError,
+      };
     }
 
     try {
       this.openConnection();
-      this.recoveryResult = {
-        recovered: false,
-        source: exists ? "primary" : "created",
-        primaryError: null,
-      };
+      if (!this.recoveryResult?.recovered) {
+        this.recoveryResult = {
+          recovered: false,
+          source: exists ? "primary" : "created",
+          primaryError: null,
+        };
+      }
     } catch (error) {
       this.closeIfOpen();
       if (!exists && !hasNativeRecoveryCandidate(nativePath)) {
@@ -213,8 +230,12 @@ export class RssDatabase {
   }
 
   async drain(): Promise<void> {
-    await this.writeChain;
+    await this.waitForWrites();
     this.assertStorageHealthy();
+  }
+
+  async waitForWrites(): Promise<void> {
+    await this.writeChain;
   }
 
   get raw(): SqliteDatabase {
@@ -269,24 +290,66 @@ export class RssDatabase {
   }
 
   async backup(destinationPath: string): Promise<void> {
-    await this.drain();
+    await this.waitForWrites();
     const safeDestinationPath = resolveVaultDirectoryPath(destinationPath);
     await ensureDirectory(this.adapter, parentPath(safeDestinationPath));
     const destination = fullPath(this.adapter, safeDestinationPath);
     const fs = loadFileSystemModule();
     const path = loadPathModule();
+    if (path.resolve(destination) === path.resolve(this.nativePath())) {
+      throw new Error(t("ui.database_backup_destination_must_not_be_current_database"));
+    }
     fs.mkdirSync(path.dirname(destination), { recursive: true });
-    removeDatabaseArtifacts(destination);
-    await assertSqliteRuntime().backup(this.nativeConnection(), destination);
-    const inspection = inspectNativeDatabaseFile(destination, true);
-    if (!inspection.valid) {
-      removeDatabaseArtifacts(destination);
-      throw new Error(inspection.error ?? t("ui.the_saved_database_failed_validation"));
+    const incoming = `${destination}.backup-incoming`;
+    const rollback = `${destination}.backup-rollback`;
+    removeDatabaseArtifacts(incoming);
+    removeDatabaseArtifacts(rollback);
+    const destinationExisted = fs.existsSync(destination);
+    let destinationMoved = false;
+    let incomingInstalled = false;
+    try {
+      await assertSqliteRuntime().backup(this.nativeConnection(), incoming);
+      const inspection = inspectNativeDatabaseFile(incoming, true);
+      if (!inspection.valid) {
+        throw new Error(inspection.error ?? t("ui.the_saved_database_failed_validation"));
+      }
+      if (fs.existsSync(destination)) {
+        fs.renameSync(destination, rollback);
+        destinationMoved = true;
+        renameDatabaseSidecars(destination, rollback);
+      }
+      fs.renameSync(incoming, destination);
+      incomingInstalled = true;
+      renameDatabaseSidecars(incoming, destination);
+    } catch (error) {
+      let cleanupError: unknown = null;
+      if (incomingInstalled || destinationMoved) {
+        cleanupError = tryRemoveDatabaseArtifacts(destination);
+      }
+      tryRemoveDatabaseArtifacts(incoming);
+      let rollbackError: unknown;
+      if (destinationMoved && fs.existsSync(rollback)) {
+        try {
+          fs.renameSync(rollback, destination);
+          renameDatabaseSidecars(rollback, destination);
+        } catch (restoreError) {
+          rollbackError = restoreError;
+        }
+      }
+      if (rollbackError || (destinationExisted && destinationMoved && cleanupError)) {
+        throw new Error(t("ui.database_backup_rollback_failed", {
+          error: describeError(rollbackError ?? cleanupError),
+        }));
+      }
+      throw error;
+    }
+    if (destinationMoved) {
+      tryRemoveDatabaseArtifacts(rollback);
     }
   }
 
   async restoreFromFile(sourcePath: string): Promise<void> {
-    await this.drain();
+    await this.waitForWrites();
     const source = fullPath(this.adapter, sourcePath);
     const target = this.nativePath();
     const incoming = `${target}.incoming`;
@@ -296,6 +359,7 @@ export class RssDatabase {
     fs.mkdirSync(path.dirname(target), { recursive: true });
     removeDatabaseArtifacts(incoming);
     removeDatabaseArtifacts(rollback);
+    const targetExisted = fs.existsSync(target);
     const sourceDatabase = openReadOnlyDatabase(source);
     try {
       await assertSqliteRuntime().backup(sourceDatabase, incoming);
@@ -312,28 +376,73 @@ export class RssDatabase {
     }
     this.checkpointWal();
     this.close();
-    if (fs.existsSync(target)) {
-      fs.renameSync(target, rollback);
-      renameDatabaseSidecars(target, rollback);
-    }
+    let targetMoved = false;
+    let incomingInstalled = false;
     try {
+      if (fs.existsSync(target)) {
+        fs.renameSync(target, rollback);
+        targetMoved = true;
+        renameDatabaseSidecars(target, rollback);
+      }
       fs.renameSync(incoming, target);
+      incomingInstalled = true;
       const installed = inspectNativeDatabaseFile(target, true);
       if (!installed.valid) {
         throw new Error(installed.error ?? t("ui.the_restored_database_failed_validation"));
       }
-      checkpointNativeDatabaseFile(target);
-      removeDatabaseArtifacts(rollback);
       this.openConnection();
+      this.storageError = null;
     } catch (error) {
-      removeDatabaseArtifacts(target);
-      if (fs.existsSync(rollback)) {
-        fs.renameSync(rollback, target);
-        renameDatabaseSidecars(rollback, target);
+      this.closeIfOpen();
+      let cleanupError: unknown = null;
+      if (incomingInstalled || targetMoved) {
+        cleanupError = tryRemoveDatabaseArtifacts(target);
       }
-      this.openConnection();
+      tryRemoveDatabaseArtifacts(incoming);
+      let rollbackError: unknown;
+      let originalRestored = !targetExisted && !targetMoved;
+      if (targetMoved && fs.existsSync(rollback)) {
+        try {
+          fs.renameSync(rollback, target);
+          renameDatabaseSidecars(rollback, target);
+          originalRestored = true;
+        } catch (restoreError) {
+          rollbackError = restoreError;
+        }
+      } else if (!targetMoved && targetExisted && fs.existsSync(target)) {
+        originalRestored = true;
+      }
+      if (!originalRestored) {
+        const restorationError = new Error(t("ui.database_restore_rollback_failed", {
+          error: describeError(rollbackError ?? cleanupError ?? error),
+        }));
+        this.storageError = restorationError;
+        this.onStorageFailure(restorationError);
+        throw restorationError;
+      }
+      try {
+        this.openConnection();
+      } catch (reopenError) {
+        const restorationError = new Error(t("ui.database_restore_rollback_failed", {
+          error: reopenError instanceof Error
+            ? reopenError.message
+            : String(reopenError),
+        }));
+        this.storageError = restorationError;
+        this.onStorageFailure(restorationError);
+        throw restorationError;
+      }
+      if (rollbackError || cleanupError) {
+        const restorationError = new Error(t("ui.database_restore_rollback_failed", {
+          error: describeError(rollbackError ?? cleanupError),
+        }));
+        this.storageError = restorationError;
+        this.onStorageFailure(restorationError);
+        throw restorationError;
+      }
       throw error;
     }
+    tryRemoveDatabaseArtifacts(rollback);
   }
 
   get path(): string {
@@ -791,6 +900,15 @@ function removeDatabaseArtifacts(nativePath: string): void {
   removeDatabaseSidecars(nativePath);
 }
 
+function tryRemoveDatabaseArtifacts(nativePath: string): unknown {
+  try {
+    removeDatabaseArtifacts(nativePath);
+    return null;
+  } catch (error) {
+    return error;
+  }
+}
+
 function fullPath(adapter: DataAdapter, normalizedPath: string): string {
   const nativeAdapter = adapter as NativeDataAdapter;
   if (typeof nativeAdapter.getFullPath !== "function") {
@@ -821,6 +939,14 @@ async function ensureDirectory(
 
 function normalizeVaultPath(path: string): string {
   return path.replaceAll("\\", "/").replace(/\/+/g, "/");
+}
+
+function describeError(error: unknown): string {
+  return error instanceof Error
+    ? error.message
+    : typeof error === "string"
+      ? error
+      : t("ui.unknown_error");
 }
 
 function splitSqlStatements(sql: string): string[] {

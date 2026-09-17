@@ -1,4 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import {
   existsSync,
   readFileSync,
@@ -21,7 +28,10 @@ import {
   parseFeed,
   stableGuid,
 } from "../src/services/rss-parser";
-import { assertSqliteRuntimeCapabilities } from "../src/services/desktop-runtime";
+import {
+  assertSqliteRuntime,
+  assertSqliteRuntimeCapabilities,
+} from "../src/infrastructure/desktop-runtime";
 import { MemoryAdapter } from "./helpers/memory-adapter";
 
 describe("database and repository", () => {
@@ -66,6 +76,15 @@ describe("database and repository", () => {
       .toThrow(/22\.16|node:sqlite/i);
     expect(() => assertSqliteRuntimeCapabilities({ DatabaseSync: function DatabaseSync() {} } as never, "24.0.0"))
       .toThrow(/22\.16|node:sqlite/i);
+  });
+
+  it("reports an unsupported host without assuming process exists", () => {
+    vi.stubGlobal("process", undefined);
+    try {
+      expect(() => assertSqliteRuntime()).toThrow(/Node\.js|node:sqlite/i);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("upgrades a v3 database in place and preserves data state", async () => {
@@ -858,6 +877,8 @@ describe("database and repository", () => {
     const destination = "Backups/backup.sqlite3";
     await database.backup(destination);
     await expect(adapter.exists(destination)).resolves.toBe(true);
+    await expect(adapter.exists(`${destination}.backup-incoming`)).resolves.toBe(false);
+    await expect(adapter.exists(`${destination}.backup-rollback`)).resolves.toBe(false);
     await repository.addFeed({
       name: "After backup",
       url: "https://example.com/after",
@@ -868,6 +889,32 @@ describe("database and repository", () => {
     expect(repository.listFeeds()).toHaveLength(1);
   });
 
+  it("keeps backup and restore available after a persistence error", async () => {
+    const failures: Error[] = [];
+    const recoverable = new RssDatabase(
+      adapter,
+      "Data/recoverable.sqlite3",
+      undefined,
+      (error) => failures.push(error),
+    );
+    await recoverable.initialize();
+    await expect(
+      recoverable.write(() => {
+        throw new Error("database is locked");
+      }),
+    ).rejects.toThrow("database is locked");
+    expect(failures).toHaveLength(1);
+    expect(recoverable.persistenceError).not.toBeNull();
+
+    const backupPath = "Data/recoverable-backup.sqlite3";
+    await recoverable.backup(backupPath);
+    await expect(adapter.exists(backupPath)).resolves.toBe(true);
+    await recoverable.restoreFromFile(backupPath);
+    expect(recoverable.persistenceError).toBeNull();
+    await expect(recoverable.write(() => undefined)).resolves.toBeUndefined();
+    recoverable.close();
+  });
+
   it("rejects backup paths outside the Vault-relative data directory", async () => {
     await expect(database.backup("../outside.sqlite3")).rejects.toThrow(
       /当前 Vault|Vault/i,
@@ -875,6 +922,17 @@ describe("database and repository", () => {
     await expect(database.backup("/tmp/outside.sqlite3")).rejects.toThrow(
       /相对目录|Vault/i,
     );
+  });
+
+  it("never treats the open database as its own backup destination", async () => {
+    await expect(database.backup(database.path)).rejects.toThrow(
+      "数据库备份目标不能是当前打开的数据库",
+    );
+    expect(repository.listFeeds()).toHaveLength(0);
+    await expect(inspectDatabaseFile(adapter, database.path)).resolves.toMatchObject({
+      valid: true,
+      error: null,
+    });
   });
 
   it("writes, queries, reopens and fully validates 50,000 articles", async () => {
@@ -1027,6 +1085,31 @@ describe("database and repository", () => {
       trackingAdapter.exists("Data/rss-reader.sqlite3.tmp"),
     ).resolves.toBe(true);
     loaded.close();
+  });
+
+  it("loads a missing primary from a valid recovery candidate", async () => {
+    const recoveryAdapter = new MemoryAdapter();
+    await recoveryAdapter.mkdir("Data");
+    await recoveryAdapter.writeBinary(
+      "Data/rss-reader.sqlite3.previous",
+      databaseFileBytes(database, adapter).slice().buffer,
+    );
+
+    const loaded = new RssDatabase(
+      recoveryAdapter,
+      "Data/rss-reader.sqlite3",
+    );
+    await loaded.initialize({ createIfMissing: false });
+
+    expect(loaded.recovery).toMatchObject({
+      recovered: true,
+      source: "previous",
+    });
+    await expect(
+      inspectDatabaseFile(recoveryAdapter, "Data/rss-reader.sqlite3"),
+    ).resolves.toMatchObject({ valid: true });
+    loaded.close();
+    recoveryAdapter.dispose();
   });
 
   it("recovers an invalid primary from temporary before previous", async () => {

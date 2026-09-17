@@ -9,7 +9,7 @@ Academic RSS Reader is a desktop Obsidian plugin for the first pass of academic 
 The plugin focuses on the step between “new papers arrived” and “I know what deserves a closer read”. It is designed to reduce repetitive triage, not to replace a reference manager or a full-text database.
 
 > [!IMPORTANT]
-> Current recommended version: **1.7.0**. This version requires Obsidian **1.13.0 or later** and is desktop-only. Its bundled runtime must also provide Node.js **22.16 or later**, `node:sqlite` `DatabaseSync`, and the SQLite Backup API. Update Obsidian before installing or updating when possible.
+> Current recommended version: **1.7.1**. This version requires Obsidian **1.13.0 or later** and is desktop-only. Its bundled runtime must also provide Node.js **22.16 or later**, `node:sqlite` `DatabaseSync`, and the SQLite Backup API. Update Obsidian before installing or updating when possible.
 
 ## Why use Academic RSS Reader
 
@@ -140,7 +140,7 @@ Academic RSS Reader does not require an account, run telemetry, or operate a dev
 - Title translation uses an unofficial Google web endpoint. When enabled, visible and prefetched titles are sent directly from your device; translations may be rate-limited, inaccurate, or unavailable and should not be used for formal citation. Requests time out, retry with bounded backoff, and stop after repeated failures; a failed task remains available for manual retry.
 - An LLM request is made only when you explicitly test the connection or review pending papers. The request includes the paper information needed for the review and your optional research-interest description, and is sent to the endpoint you configure.
 
-The plugin does not create or open a database during startup. Database creation and loading begin only after you choose a Vault-relative data directory and explicitly create or load it. Saves use validated temporary and previous snapshots, and the settings page can create protection backups and restore the latest valid backup. The desktop-native SQLite boundary is limited to the database file, WAL/SHM sidecars, temporary files, and backups; other Vault files continue to use Obsidian's `DataAdapter` boundary.
+The plugin does not create or open a database during startup. Database creation and loading begin only after you choose a Vault-relative data directory and explicitly create or load it. Saves use validated temporary and previous snapshots, and the settings page can create protection backups and restore the latest valid backup even after a persistence error is reported. The desktop-native SQLite boundary is limited to the database file, WAL/SHM sidecars, temporary files, and backups; other Vault files continue to use Obsidian's `DataAdapter` boundary.
 
 ## Compatibility and boundaries
 
@@ -159,6 +159,7 @@ The plugin does not create or open a database during startup. Database creation 
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [Security and privacy](SECURITY.md)
 - [Changelog](CHANGELOG.md)
+- [v1.7.1 release notes](docs/V1_7_1_RELEASE.md)
 - [v1.7.0 release notes](docs/V1_7_0_RELEASE.md)
 - [v1.6.3 release notes](docs/V1_6_3_RELEASE.md)
 - [v1.6.2 release notes](docs/V1_6_2_RELEASE.md)
