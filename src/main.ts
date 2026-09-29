@@ -281,9 +281,13 @@ export default class RssReaderPlugin extends Plugin {
       }
       throw new Error(t("ui.a_database_is_already_running_use_the_data_directory_switch_controls"));
     }
-    const inspection = await this.inspectDataDirectory(normalized);
+    await this.loadInitialDatabase(normalized);
+  }
+
+  private async loadInitialDatabase(directory: string): Promise<void> {
+    const inspection = await this.inspectDataDirectory(directory);
     const path = databasePaths(
-      await this.resolveVaultDirectory(normalized),
+      await this.resolveVaultDirectory(directory),
     ).databasePath;
     if (
       !inspection.valid &&
@@ -293,7 +297,7 @@ export default class RssReaderPlugin extends Plugin {
         inspection.error ?? t("ui.the_selected_directory_does_not_contain_rss_reader_sqlite3"),
       );
     }
-    await this.activateInitialDatabase(normalized, false);
+    await this.activateInitialDatabase(directory, false);
   }
 
   async switchDataDirectory(
@@ -515,7 +519,7 @@ export default class RssReaderPlugin extends Plugin {
     directory: string,
   ): Promise<void> {
     try {
-      await this.loadDatabase(directory);
+      await this.loadInitialDatabase(normalizeDirectory(directory));
       this.startAutomaticUpdateOnViewOpen();
     } catch (error) {
       if (this.unloading) {
@@ -566,9 +570,6 @@ export default class RssReaderPlugin extends Plugin {
       this.databaseState = "ready";
       this.automaticUpdateStarted = false;
       this.refreshSettings();
-      if (!this.unloading) {
-        await this.refreshViews();
-      }
     } catch (error) {
       await this.disposeContext(next).catch(() => undefined);
       if (this.unloading) {
@@ -583,6 +584,9 @@ export default class RssReaderPlugin extends Plugin {
     } finally {
       releaseTransition?.();
       releaseLifecycle();
+    }
+    if (!this.unloading) {
+      await this.refreshViews();
     }
   }
 
