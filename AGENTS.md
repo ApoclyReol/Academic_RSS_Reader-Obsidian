@@ -47,7 +47,7 @@ git diff --check
 - `npm run package` 必须先清空 `build/`，再将 `main.js`、`manifest.json`、`styles.css` 直接复制到其中；不得生成 ZIP、校验文件、插件子目录或其他产物。
 - 发布前检查 `build/` 顶层只包含 `main.js`、`manifest.json`、`styles.css`。
 - 扫描最终 `main.js`，确认依赖没有重新打入 Node `fs` / `path` 分支。
-- 桌面正式版本应在 Windows 和 macOS 验收，并检查中文界面与英文回退。
+- 桌面正式版本应在 Windows 和 macOS 验收，并检查中文界面与英文回退；人工验收由用户负责。用户明确要求发布时，视为用户已完成所需验收；不要重复要求证明，也不要在发布结论中自行标注“未验收”。代理仍须执行自动验证、构建和发布后核查。
 
 ## 版本与发布
 
