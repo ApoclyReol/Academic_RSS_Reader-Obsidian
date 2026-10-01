@@ -88,6 +88,7 @@ describe("declarative settings", () => {
     expect(controls.map((item) => item.control.key)).toEqual([
       "autoUpdateOnStartup",
       "hiddenExpireDays",
+      "cardDynamicHeight",
       "cardShowJournal",
       "cardShowAuthors",
       "cardShowPublicationDate",
@@ -124,6 +125,7 @@ describe("declarative settings", () => {
       cardShowDoi: false,
       cardShowAbstract: false,
       cardShowGraphicalAbstract: true,
+      cardDynamicHeight: false,
     });
 
     const invalid = normalizeSettings({
@@ -133,6 +135,7 @@ describe("declarative settings", () => {
       cardShowDoi: {},
       cardShowAbstract: [],
       cardShowGraphicalAbstract: "true",
+      cardDynamicHeight: "true",
       targetLanguage: "xx",
     } as unknown as Partial<RssReaderSettings>);
     expect(invalid).toMatchObject({
@@ -142,6 +145,7 @@ describe("declarative settings", () => {
       cardShowDoi: false,
       cardShowAbstract: false,
       cardShowGraphicalAbstract: true,
+      cardDynamicHeight: false,
       targetLanguage: "zh-CN",
     });
 
@@ -282,10 +286,12 @@ describe("declarative settings", () => {
 
     void tab.setControlValue("cardShowAuthors", true);
     void tab.setControlValue("cardShowAbstract", true);
+    void tab.setControlValue("cardDynamicHeight", true);
     await new Promise<void>((resolve) => settingsWindow.setTimeout(resolve, 300));
 
     expect(plugin.settings.cardShowAuthors).toBe(true);
     expect(plugin.settings.cardShowAbstract).toBe(true);
+    expect(plugin.settings.cardDynamicHeight).toBe(true);
     expect(saveSettings).toHaveBeenCalledTimes(1);
     expect(saveSettings).toHaveBeenCalledWith(true);
   });

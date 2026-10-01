@@ -92,6 +92,29 @@ describe("paper card presentation", () => {
     expect(displayAbstract(item)).toBe("");
   });
 
+  it("omits enabled empty fields only when content-driven height is selected", () => {
+    const settings = {
+      ...DEFAULT_SETTINGS,
+      cardShowAuthors: true,
+      cardShowAbstract: true,
+      cardDynamicHeight: true,
+    };
+    const empty = buildCardPresentation(createItem({
+      journal: "", authors: "", summary: "", imageUrl: null,
+    }), settings);
+    expect(cardLayoutOptions(settings, empty)).toMatchObject({
+      showMetadata: false, showAuthors: false, showAbstract: false,
+    });
+    expect(cardLayoutOptions({ ...settings, cardDynamicHeight: false }, empty))
+      .toMatchObject({
+        showMetadata: true, showAuthors: true, showAbstract: true,
+      });
+    expect(cardLayoutOptions(settings, buildCardPresentation(createItem(), settings)))
+      .toMatchObject({
+        showMetadata: true, showAuthors: true, showAbstract: true,
+      });
+  });
+
   it("keeps real prose when it follows labeled feed metadata", () => {
     const summary =
       "Publication date: September 2026 " +

@@ -6,6 +6,7 @@ import {
 import {
   canonicalizeLink,
   publisherIdentity,
+  normalizeText,
 } from "../models/item-identity";
 import {
   ITEM_STATUSES,
@@ -37,6 +38,9 @@ import {
   type LegacyIdentityRepairResult,
 } from "./legacy-identity-repair";
 import { toFeed, toItem, toTranslation } from "./row-mappers";
+import { repairTitleMarkup } from "./title-maintenance";
+import { cleanTitleText } from "../models/title-text";
+import { translationInputText } from "../models/translation-source";
 
 type Row = RepositoryRow;
 
@@ -47,6 +51,10 @@ export class RssRepository {
 
   async repairLegacyItemIdentity(): Promise<LegacyIdentityRepairResult> {
     return repairLegacyItemIdentityInDatabase(this.database);
+  }
+
+  async repairTitleMarkup(): Promise<void> {
+    await repairTitleMarkup(this.database);
   }
 
   listFeeds(includeDisabled = true): Feed[] {
@@ -293,9 +301,11 @@ export class RssRepository {
         LEFT JOIN translations tt
           ON tt.item_id=i.id AND tt.field='title'
           AND tt.target_language=$translationTarget
+          AND tt.source_normalized=i.title
         LEFT JOIN translations ta
           ON ta.item_id=i.id AND ta.field='abstract'
           AND ta.target_language=$translationTarget
+          AND ta.source_normalized=COALESCE(i.summary,'')
         ${where}
         ORDER BY ${orderBy}
         LIMIT ${limit} OFFSET ${offset}
@@ -316,9 +326,11 @@ export class RssRepository {
       LEFT JOIN translations tt
         ON tt.item_id=i.id AND tt.field='title'
         AND tt.target_language=$target
+        AND tt.source_normalized=i.title
       LEFT JOIN translations ta
         ON ta.item_id=i.id AND ta.field='abstract'
         AND ta.target_language=$target
+        AND ta.source_normalized=COALESCE(i.summary,'')
       WHERE i.id=$id
       `,
       { $id: itemId, $target: targetLanguage },
@@ -492,29 +504,30 @@ export class RssRepository {
       .map(toTranslation);
   }
 
-  async upsertTranslationTask(record: TranslationRecord): Promise<void> {
+  async upsertTranslationTask(record: TranslationRecord, force = false): Promise<void> {
     await this.database.write((db) => {
       db.run(
         `
         INSERT INTO translations(
           item_id,field,source_text,translated_text,source_language,target_language,
-          provider,source_hash,status,attempt_count,last_error,translated_at
+          provider,source_hash,status,attempt_count,last_error,translated_at,source_normalized
         ) VALUES (
           $itemId,$field,$sourceText,$translatedText,$sourceLanguage,$targetLanguage,
-          $provider,$sourceHash,$status,$attemptCount,$lastError,$translatedAt
+          $provider,$sourceHash,$status,$attemptCount,$lastError,$translatedAt,$sourceNormalized
         )
         ON CONFLICT(item_id,field,target_language) DO UPDATE SET
           source_text=excluded.source_text,
+          source_normalized=excluded.source_normalized,
           translated_text=CASE
-            WHEN translations.source_hash=excluded.source_hash
+            WHEN $force=0 AND translations.source_hash=excluded.source_hash
             THEN translations.translated_text ELSE NULL END,
           source_language=CASE
-            WHEN translations.source_hash=excluded.source_hash
+            WHEN $force=0 AND translations.source_hash=excluded.source_hash
             THEN translations.source_language ELSE NULL END,
           provider=excluded.provider,
           source_hash=excluded.source_hash,
           status=CASE
-            WHEN translations.source_hash=excluded.source_hash
+            WHEN $force=0 AND translations.source_hash=excluded.source_hash
               AND translations.status='succeeded'
             THEN 'succeeded' ELSE excluded.status END,
           attempt_count=CASE
@@ -536,7 +549,7 @@ export class RssRepository {
             WHEN translations.source_hash=excluded.source_hash
             THEN translations.translated_at ELSE NULL END
         `,
-        this.translationParams(record),
+        { ...this.translationParams(record), $force: force ? 1 : 0 },
       );
     });
   }
@@ -553,6 +566,7 @@ export class RssRepository {
           last_error=$lastError,
           translated_at=$translatedAt
         WHERE item_id=$itemId AND field=$field AND target_language=$targetLanguage
+          AND source_hash=$sourceHash
         `,
         this.translationParams(record),
       );
@@ -995,11 +1009,13 @@ export class RssRepository {
       "LOWER(COALESCE(i.title,''))",
       `LOWER(COALESCE((SELECT translated_text FROM translations
         WHERE item_id=i.id AND field='title'
+          AND source_normalized=i.title
           AND target_language=$translationTarget AND status='succeeded'),''))`,
       "LOWER(COALESCE(i.authors,''))",
       "LOWER(COALESCE(i.summary,''))",
       `LOWER(COALESCE((SELECT translated_text FROM translations
         WHERE item_id=i.id AND field='abstract'
+          AND source_normalized=COALESCE(i.summary,'')
           AND target_language=$translationTarget AND status='succeeded'),''))`,
       "LOWER(COALESCE(i.article_journal,''))",
       `LOWER(${ITEM_JOURNAL_VALUE})`,
@@ -1208,11 +1224,12 @@ export class RssRepository {
     item: ParsedItem,
     id?: number,
   ): Record<string, unknown> {
+    const title = cleanTitleText(item.title) || item.title;
     return {
       $id: id ?? null,
       $stableGuid: item.stableGuid,
-      $title: item.title,
-      $titleNorm: item.titleNorm,
+      $title: title,
+      $titleNorm: title === item.title ? item.titleNorm : normalizeText(title),
       $authors: item.authors,
       $journal: item.articleJournal?.trim() || null,
       $year: item.year,
@@ -1231,11 +1248,13 @@ export class RssRepository {
       $itemId: record.itemId,
       $field: record.field,
       $sourceText: record.sourceText,
-      $translatedText: record.translatedText,
+      $translatedText: record.translatedText === null ? null :
+        translationInputText(record.field, record.translatedText),
       $sourceLanguage: record.sourceLanguage,
       $targetLanguage: record.targetLanguage,
       $provider: record.provider,
       $sourceHash: record.sourceHash,
+      $sourceNormalized: translationInputText(record.field, record.sourceText),
       $status: record.status,
       $attemptCount: record.attemptCount,
       $lastError: record.lastError,

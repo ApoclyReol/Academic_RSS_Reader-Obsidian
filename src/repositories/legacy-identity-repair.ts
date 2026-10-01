@@ -133,11 +133,11 @@ export async function repairLegacyItemIdentity(
           `
           INSERT OR IGNORE INTO translations(
             item_id,field,source_text,translated_text,source_language,
-            target_language,provider,source_hash,status,attempt_count,
+            target_language,provider,source_hash,source_normalized,status,attempt_count,
             last_error,translated_at
           )
           SELECT $winner,field,source_text,translated_text,source_language,
-                 target_language,provider,source_hash,status,attempt_count,
+                 target_language,provider,source_hash,source_normalized,status,attempt_count,
                  last_error,translated_at
           FROM translations
           WHERE item_id IN (${placeholders})

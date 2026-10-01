@@ -4,17 +4,17 @@
 
 > **Turn scattered academic RSS feeds into a local reading queue that you can continuously screen, translate, and prioritize.**
 
-Academic RSS Reader is a desktop Obsidian plugin for the first pass of academic literature screening. It collects RSS and Atom feeds into a local SQLite database, keeps reading decisions in five clear baskets, and learns from those decisions to prioritize unread papers. It does not require a Python sidecar.
+Academic RSS Reader is a desktop Obsidian plugin for the first pass of academic literature screening. It collects RSS and Atom feeds into a local SQLite database, keeps reading decisions in five clear baskets, and learns from those decisions to prioritize papers to screen. It does not require a Python sidecar.
 
 The plugin focuses on the step between “new papers arrived” and “I know what deserves a closer read”. It is designed to reduce repetitive triage, not to replace a reference manager or a full-text database.
 
 > [!IMPORTANT]
-> Current recommended version: **1.7.1**. This version requires Obsidian **1.13.0 or later** and is desktop-only. Its bundled runtime must also provide Node.js **22.16 or later**, `node:sqlite` `DatabaseSync`, and the SQLite Backup API. Update Obsidian before installing or updating when possible.
+> Current recommended version: **1.8.0**. This version requires Obsidian **1.13.0 or later** and is desktop-only. Its bundled runtime must also provide Node.js **22.16 or later**, `node:sqlite` `DatabaseSync`, and the SQLite Backup API. Update Obsidian before installing or updating when possible.
 
 ## Why use Academic RSS Reader
 
 - **One reading queue**: bring journal, lab, publisher, and other RSS/Atom feeds into one reader.
-- **Feedback-driven prioritization**: mark papers as interested, archived, hidden, or expired, then use those decisions to rank the unread queue.
+- **Feedback-driven prioritization**: mark papers as following, saved, skipped, or expired, then use those decisions to rank the screening queue.
 - **A small, understandable workflow**: collect, scan, classify, and return to the papers worth reading.
 - **Local-first storage**: subscriptions, papers, reading states, translations, recommendations, and analysis stay in a Vault directory you choose.
 - **Optional assistance**: translate visible titles or ask a configured OpenAI-compatible service to review only the papers that remain pending.
@@ -61,24 +61,24 @@ Academic RSS Reader is a good fit if you:
 
 ### Screen papers in five baskets
 
-- Manage papers as **Unread**, **Interested**, **Archived**, **Hidden**, or **Expired**.
+- Manage papers as **To screen**, **Following**, **Saved**, **Skipped**, or **Expired**.
 - Load long lists continuously in batches of 100 instead of rendering the whole database at once.
 - Choose whether cards show the journal, authors, publication date, DOI, feed-provided text abstract, and graphical abstract. Titles, relevance, and actions always remain visible.
 - Sort any basket by title, last-seen update time, journal, or relevance.
 - Search the current basket with fuzzy keywords across titles, authors, journals, abstracts, DOI, and feed metadata.
-- After marking the papers you want as interested, hide every remaining unread paper in one confirmed action and undo the full batch when needed.
-- Keep the basket navigation and search controls visible while scrolling; the Back to top action stays at the lower-right and returns to the list end position when you reach the bottom.
+- After following the papers you want, skip every remaining paper to screen in one confirmed action and undo the full batch when needed.
+- Keep the compact basket navigation, search, translation, sorting, and status toolbar visible while scrolling; the Back to top action stays at the lower-right and returns to the list end position when you reach the bottom.
 - Open the original paper in the system browser.
 - Undo the most recent status action during the current reader session.
 
-### Prioritize the unread queue
+### Prioritize the screening queue
 
 - Train a local TypeScript TF-IDF and logistic-regression model from your reading states.
-- Use interested and archived papers as positive examples, and hidden and expired papers as negative examples.
-- Show high-relevance, pending, and low-relevance tiers below a fixed three-line title area, using a compact status badge and two aligned lines for the strongest positive and negative keyword evidence.
+- Use following and saved papers as positive examples, and skipped and expired papers as negative examples.
+- Show high-relevance, pending, and low-relevance tiers using a compact status badge and two aligned lines for the strongest positive and negative keyword evidence.
 - Use the same TF-IDF feature scale for training and formal scoring; cancelled background training cannot write stale results.
 - Manage the learned keyword list by disabling or re-enabling individual terms.
-- Refresh recommendations automatically after feed updates, while reusing an unchanged model and scoring only new or changed unread papers when possible.
+- Refresh recommendations automatically after feed updates, while reusing an unchanged model and scoring only new or changed papers to screen when possible.
 - Optionally review only pending papers with a user-configured OpenAI-compatible LLM. The LLM does not run automatically during normal feed updates.
 
 The local model needs at least two positive and two negative training papers. Until there is enough feedback, papers can remain unscored rather than receiving an arbitrary personalized judgment.
@@ -88,6 +88,8 @@ The local model needs at least two positive and two negative training papers. Un
 - Translate visible paper titles and prefetch the next eight titles while you scroll.
 - Cache translations in the local database and keep the original title available at any time.
 - Review overall reading states and compare interest rates across feeds.
+- Interest rate is `(following + saved) / (following + saved + skipped + expired)`; papers to screen are excluded. Moving skipped papers to expired does not change the rate.
+- Subscription update times and the last-update summary are parsed as UTC and displayed in the user's system timezone.
 - Keep the interface language tied to Obsidian while choosing the content translation target separately. The source language is detected automatically for mixed-language feeds.
 - Choose among Simplified Chinese (`zh-CN`), Traditional Chinese (`zh-TW`), English (`en`), Japanese (`ja`), Korean (`ko`), French (`fr`), German (`de`), Spanish (`es`), Portuguese (`pt`), Italian (`it`), and Russian (`ru`) as the translation target; the settings options show each code to make the saved target explicit.
 
@@ -95,9 +97,11 @@ The local model needs at least two positive and two negative training papers. Un
 
 - When journal display is enabled, each card shows one journal name: an article-level value refreshed from RSS takes priority, with the earliest associated feed default used only as a fallback.
 - Card settings default to the v1.5.0 presentation: journal and graphical abstract visible, with authors, publication date, DOI, and text abstract hidden.
-- Every card uses the same height derived from the globally enabled rows. Titles reserve three lines, authors one line, and text abstracts three lines; missing item values and image loading do not change individual card height.
+- Cards use uniform heights by default, derived from the enabled rows. Titles reserve three lines, authors one line, and text abstracts three lines. Enable **Adjust card height to content** under **Paper cards** for compact cards with naturally wrapping titles and no empty field slots; abstracts show up to three lines and images use a bounded preview.
 - Turning off graphical abstracts prevents card image elements and their remote requests from being created. Images are still loaded lazily and hidden on failure when enabled.
 - Title fragments delimited by `$...$`, `$$...$$`, `\(...\)`, or `\[...\]` use Obsidian's native MathJax renderer; invalid fragments fall back to their original text.
+- RSS/Atom title markup and HTML entities are converted to plain text before storage. The first database load creates a protection backup before cleaning historical titles and cached translations, while preserving translation source snapshots and hashes. Markup-only changes reuse translations; content changes invalidate cached translations and refresh them when translation is enabled.
+- Corrigendum and Erratum notices remain separate papers with a correction badge, a short title, and expandable full original and translated titles. Cited original-paper years and DOIs are not inferred as correction metadata.
 - Article links accept only `http:` and `https:`. RSS/XML rejects `DOCTYPE`, invalid root structures, and responses over 10 MiB; only known tracking parameters are removed, while business query parameters are preserved.
 - LLM endpoints must use HTTPS, or HTTP on `localhost`, `127.0.0.1`, or `::1`. Requests have a 30-second timeout and bounded retries.
 
@@ -159,6 +163,7 @@ The plugin does not create or open a database during startup. Database creation 
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [Security and privacy](SECURITY.md)
 - [Changelog](CHANGELOG.md)
+- [v1.8.0 release notes](docs/V1_8_0_RELEASE.md)
 - [v1.7.1 release notes](docs/V1_7_1_RELEASE.md)
 - [v1.7.0 release notes](docs/V1_7_0_RELEASE.md)
 - [v1.6.3 release notes](docs/V1_6_3_RELEASE.md)

@@ -14,6 +14,43 @@ import {
 } from "../src/services/rss-parser";
 
 describe("RSS parser", () => {
+  it("keeps a correction separate and does not inherit cited original metadata", () => {
+    const title = 'Corrigendum to “Body, emotions, and sexuality in the metaverse” [Computers in Human Behavior 161 (2024) 108390]';
+    const result = parseFeed(`<rss><channel><title>Journal</title>
+      <item><title><![CDATA[${title}]]></title>
+      <description>Corrects DOI: 10.1016/j.chb.2024.108390</description></item>
+      <item><title><![CDATA[${title}]]></title><doi>10.1016/j.chb.2026.109999</doi>
+      <pubDate>Thu, 01 Oct 2026 00:00:00 GMT</pubDate></item>
+      <item><title>Body, emotions, and sexuality in the metaverse</title>
+      <doi>10.1016/j.chb.2024.108390</doi></item>
+      </channel></rss>`, "Journal");
+    expect(result.items[0]).toMatchObject({ title, doi: "", year: "" });
+    expect(result.items[1]).toMatchObject({ title, doi: "10.1016/j.chb.2026.109999", year: "2026" });
+    expect(result.items[0]?.stableGuid).not.toBe(result.items[2]?.stableGuid);
+    expect(result.items[1]?.stableGuid).not.toBe(result.items[2]?.stableGuid);
+  });
+  it("cleans CDATA and escaped HTML titles before normalization and identity", () => {
+    const result = parseFeed(`<rss><channel><title>Journal</title>
+      <item><title><![CDATA[超越元路径：ASHIN——<strong>H</strong>异构<strong>I</strong>信息<strong>网络的统一<strong>A</strong>代数<strong>S</strong>签名&#x20;]]></title></item>
+      <item><title>&lt;span class="small-caps"&gt;NormasTCU&lt;/span&gt; — IR &amp;amp; LLM</title></item>
+      </channel></rss>`, "Fallback");
+    expect(result.items.map((item) => item.title)).toEqual([
+      "超越元路径：ASHIN——H异构I信息网络的统一A代数S签名",
+      "NormasTCU — IR & LLM",
+    ]);
+    expect(result.items[1]?.titleNorm).toBe("normastcuir&llm");
+    expect(result.items[1]?.stableGuid).toBe(stableGuid({
+      title: "NormasTCU — IR & LLM", journal: "Fallback", year: "", authors: "", doi: "",
+    }));
+  });
+
+  it("preserves the order of nested Atom XHTML title text", () => {
+    const result = parseFeed(`<feed xmlns="http://www.w3.org/2005/Atom">
+      <title>Journal</title><entry><title type="xhtml">
+      <div xmlns="http://www.w3.org/1999/xhtml">A <i>mixed</i> title with H<sub>2</sub>O &amp; math $x &lt; y$</div>
+      </title></entry></feed>`, "Fallback");
+    expect(result.items[0]?.title).toBe("A mixed title with H2O & math $x < y$");
+  });
   it("parses RSS and uses the feed fallback when no article journal exists", () => {
     const result = parseFeed(
       `<?xml version="1.0"?>

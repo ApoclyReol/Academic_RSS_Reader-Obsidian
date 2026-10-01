@@ -1,5 +1,6 @@
 import { en } from "./locales/en";
 import { zhCN } from "./locales/zh-CN";
+import { normalizeStoredTimestamp } from "./models/stored-timestamp";
 
 export type UiLanguage = "en" | "zh";
 export type LocaleKey = keyof typeof en;
@@ -55,7 +56,9 @@ export function formatDate(
     timeStyle: "short",
   },
 ): string {
-  const date = value instanceof Date ? value : new Date(value);
+  const date = value instanceof Date ? value : new Date(
+    typeof value === "string" ? normalizeStoredTimestamp(value) : value,
+  );
   return Number.isNaN(date.getTime())
     ? ""
     : new Intl.DateTimeFormat(

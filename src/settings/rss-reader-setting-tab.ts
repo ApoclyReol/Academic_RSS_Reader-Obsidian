@@ -102,6 +102,15 @@ export class RssReaderSettingTab extends PluginSettingTab {
         cls: SETTINGS_CLASS,
         items: [
           {
+            name: t("ui.card_dynamic_height"),
+            desc: t("ui.card_dynamic_height_description"),
+            control: {
+              type: "toggle",
+              key: "cardDynamicHeight",
+              defaultValue: false,
+            },
+          },
+          {
             name: t("ui.show_journal_on_paper_cards"),
             desc: t("ui.show_journal_on_paper_cards_description"),
             control: {
@@ -270,6 +279,7 @@ export class RssReaderSettingTab extends PluginSettingTab {
         }
         this.plugin.settings.hiddenExpireDays = value;
         break;
+      case "cardDynamicHeight":
       case "cardShowJournal":
       case "cardShowAuthors":
       case "cardShowPublicationDate":

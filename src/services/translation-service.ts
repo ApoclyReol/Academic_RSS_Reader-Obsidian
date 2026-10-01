@@ -3,6 +3,7 @@ import type {
   TranslationRecord,
 } from "../models/domain";
 import { t } from "../i18n";
+import { translationInputText } from "../models/translation-source";
 import type { RssReaderSettings } from "../models/settings";
 import { RssRepository } from "../repositories/rss-repository";
 import type { DatabaseOperationCoordinator } from "../infrastructure/database-operation-coordinator";
@@ -198,6 +199,7 @@ export class TranslationService {
     field: TranslationField,
     priority: TaskPriority,
     force = false,
+    targetLanguage: string = this.getSettings().targetLanguage,
   ): Promise<void> {
     const generation = this.generation;
     if (this.stopped) {
@@ -205,16 +207,15 @@ export class TranslationService {
     }
     const item = this.repository.getItem(
       itemId,
-      this.getSettings().targetLanguage,
+      targetLanguage,
     );
     if (!item) {
       return;
     }
-    const sourceText = field === "title" ? item.title : item.summary;
+    const sourceText = translationInputText(field, field === "title" ? item.title : item.summary);
     if (!sourceText.trim()) {
       return;
     }
-    const targetLanguage = this.getSettings().targetLanguage;
     const sourceHash = hashText(sourceText);
     const existing = this.repository.getTranslation(
       itemId,
@@ -224,7 +225,7 @@ export class TranslationService {
     const resetAttempts = force || existing?.status === "failed";
     if (
       !force &&
-      existing?.sourceHash === sourceHash &&
+      existing && translationInputText(field, existing.sourceText) === sourceText &&
       existing.status === "succeeded"
     ) {
       return;
@@ -246,7 +247,7 @@ export class TranslationService {
     if (this.stopped || generation !== this.generation) {
       return;
     }
-    await this.repository.upsertTranslationTask(targetRecord);
+    await this.repository.upsertTranslationTask(targetRecord, force);
     if (this.stopped || generation !== this.generation) {
       return;
     }
@@ -337,13 +338,21 @@ export class TranslationService {
     if (this.stopped || generation !== this.generation) {
       return;
     }
-    if (isTargetLanguage(record.sourceText, record.targetLanguage)) {
+    const item = this.repository.getItem(task.itemId, task.targetLanguage);
+    if (!item) return;
+    const input = translationInputText(task.field, record.sourceText);
+    const currentInput = translationInputText(task.field, task.field === "title" ? item.title : item.summary);
+    if (input !== currentInput) {
+      await this.prepareAndEnqueue(task.itemId, task.field, task.priority, false, task.targetLanguage);
+      return;
+    }
+    if (isTargetLanguage(input, record.targetLanguage)) {
       if (this.stopped || generation !== this.generation) {
         return;
       }
       await this.repository.updateTranslation({
         ...record,
-        translatedText: record.sourceText,
+        translatedText: input,
         sourceLanguage: record.targetLanguage,
         status: "succeeded",
         lastError: null,
@@ -373,7 +382,7 @@ export class TranslationService {
         return;
       }
       const result = await this.translateWithTimeout(
-        current.sourceText,
+        input,
         current.targetLanguage,
       );
       if (this.stopped || generation !== this.generation) {

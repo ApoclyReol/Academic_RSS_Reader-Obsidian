@@ -7,6 +7,7 @@ import type {
   UpdateResult,
 } from "../models/domain";
 import type { RssReaderSettings } from "../models/settings";
+import { normalizeStoredTimestamp } from "../models/stored-timestamp";
 import { RssRepository } from "../repositories/rss-repository";
 import type { DatabaseOperationCoordinator } from "../infrastructure/database-operation-coordinator";
 import {
@@ -498,7 +499,7 @@ export class FeedService {
         const headers: Record<string, string> = {
           Accept:
             "application/rss+xml, application/atom+xml, application/xml, text/xml, */*",
-          "User-Agent": "Academic-RSS-Reader/1.7.1",
+          "User-Agent": "Academic-RSS-Reader/1.8.0",
         };
         const hasMalformedMetadata =
           isMalformedImportedName(feed.name) ||
@@ -596,10 +597,7 @@ export class FeedService {
 }
 
 function parseStoredTimestamp(value: string): number {
-  const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)
-    ? `${value.replace(" ", "T")}Z`
-    : value;
-  return Date.parse(normalized);
+  return Date.parse(normalizeStoredTimestamp(value));
 }
 
 class NonRetryableError extends Error {}

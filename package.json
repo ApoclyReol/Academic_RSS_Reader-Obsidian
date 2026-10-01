@@ -1,6 +1,6 @@
 {
   "name": "academic-rss-reader",
-  "version": "1.7.1",
+  "version": "1.8.0",
   "description": "面向学术文献初筛的 Obsidian 桌面 RSS 阅读与个性化推荐插件。",
   "main": "main.js",
   "type": "module",
@@ -38,6 +38,7 @@
     "vitest": "^4.1.10"
   },
   "dependencies": {
+    "entities": "7.0.1",
     "fast-xml-parser": "^5.10.1",
     "fast-xml-validator": "1.4.1"
   }

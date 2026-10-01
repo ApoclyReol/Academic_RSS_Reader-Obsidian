@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 export interface SchemaMigration {
   version: number;
@@ -46,6 +46,13 @@ export const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
     version: 5,
     statements: [
       "ALTER TABLE items ADD COLUMN image_url TEXT",
+    ],
+  },
+  {
+    version: 6,
+    statements: [
+      "ALTER TABLE translations ADD COLUMN source_normalized TEXT NOT NULL DEFAULT ''",
+      "UPDATE translations SET source_normalized=source_text",
     ],
   },
 ];

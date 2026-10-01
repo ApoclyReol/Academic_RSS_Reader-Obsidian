@@ -29,14 +29,20 @@ const METADATA_LABEL_PATTERN =
 
 export function cardLayoutOptions(
   settings: RssReaderSettings,
+  presentation?: CardPresentation,
 ): CardLayoutOptions {
+  const omitEmpty = settings.cardDynamicHeight && presentation !== undefined;
   return {
-    showMetadata:
+    showMetadata: omitEmpty ? Boolean(
+      presentation.journal || presentation.publicationDate || presentation.doi,
+    ) :
       settings.cardShowJournal ||
       settings.cardShowPublicationDate ||
       settings.cardShowDoi,
-    showAuthors: settings.cardShowAuthors,
-    showAbstract: settings.cardShowAbstract,
+    showAuthors: settings.cardShowAuthors &&
+      (!omitEmpty || Boolean(presentation.authors)),
+    showAbstract: settings.cardShowAbstract &&
+      (!omitEmpty || Boolean(presentation.abstract)),
     showGraphicalAbstract: settings.cardShowGraphicalAbstract,
   };
 }

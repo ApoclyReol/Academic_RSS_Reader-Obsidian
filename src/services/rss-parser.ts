@@ -3,6 +3,8 @@ import { SyntaxValidator } from "fast-xml-validator";
 
 import { t } from "../i18n";
 import type { ParsedItem } from "../models/domain";
+import { cleanTitleText } from "../models/title-text";
+import { isCorrectionTitle } from "../models/publication-notice";
 import {
   canonicalizeLink,
   stableGuid as buildStableGuid,
@@ -45,6 +47,7 @@ const parser = new XMLParser({
   textNodeName: "#text",
   trimValues: true,
   processEntities: true,
+  stopNodes: ["*.title"],
 });
 const xmlValidator = new SyntaxValidator({ multipleRoots: false });
 export function parseFeed(
@@ -80,7 +83,7 @@ export function parseFeed(
     : isRdf
       ? arrayValue(rdf.item)
       : arrayValue(channel.entry);
-  const title = textValue(channel.title) || fallbackName;
+  const title = cleanTitleText(textValue(channel.title)) || fallbackName;
 
   return {
     title,
@@ -139,7 +142,7 @@ function entryToItem(
   feedName: string,
   fallbackJournal: string,
 ): ParsedItem {
-  const title = textValue(entry.title);
+  const title = cleanTitleText(textValue(entry.title));
   const contentValues = ITEM_CONTENT_FIELDS.map((field) => entry[field]);
   const imageUrl = extractImageUrl(entry, contentValues);
   const rawSummary = firstText(...contentValues);
@@ -156,12 +159,13 @@ function entryToItem(
       entry["dc:date"],
     ),
   );
-  const year = pubDate.slice(0, 4) || inferYear(title, summary);
+  const correction = isCorrectionTitle(title);
+  const year = pubDate.slice(0, 4) || (correction ? "" : inferYear(title, summary));
   const doi = findDoi(
-    title,
     firstText(entry.doi, entry["dc:identifier"], entry.id, entry.guid),
     link,
-    summary,
+    correction ? "" : title,
+    correction ? "" : summary,
   );
   return {
     stableGuid: stableGuid({

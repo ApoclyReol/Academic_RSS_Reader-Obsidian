@@ -28,7 +28,7 @@ export default defineConfig(
   },
   ...obsidianmd.configs.recommended,
   {
-    files: ["tests/dom-ui.test.ts"],
+    files: ["tests/dom-ui.test.ts", "tests/reader-layout.test.ts"],
     rules: {
       "obsidianmd/prefer-create-el": "off",
     },

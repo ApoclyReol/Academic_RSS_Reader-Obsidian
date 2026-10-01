@@ -54,7 +54,7 @@ src/
 - 数据目录先按 Vault 相对路径校验，再通过 `DataAdapter.getFullPath()` 解析；原生文件 API 只接触 SQLite 主文件、WAL/SHM sidecar、incoming/rollback/tmp/previous 文件和 `backups/` 中的数据库备份，其他 Vault 文件继续使用 `DataAdapter`。
 - `RssDatabase` 使用 `DatabaseSync`、WAL、`foreign_keys=ON`、`busy_timeout=5000`、`BEGIN IMMEDIATE` 和单一写队列。正常关闭前必须按 service stop/drain → database drain → database close 的顺序执行；恢复路径使用 `waitForWrites()`，避免终态持久化错误阻断恢复。
 - 备份使用 SQLite Backup API；恢复使用 incoming/rollback 临时文件和保护快照；替换失败时恢复原库并保留可诊断候选。
-- v3 数据库载入时原地升级到 schema 5。升级前使用 `VACUUM INTO` 在 `backups/` 创建保护备份；迁移失败时回滚到原文件。
+- v3 数据库载入时原地升级到 schema 6。升级前使用 `VACUUM INTO` 在 `backups/` 创建保护备份；迁移失败时回滚到原文件。
 - 每批订阅更新完成后自动刷新推荐；训练数据 hash 未变化时复用模型并仅增量评分。用户仍可通过按钮主动重建。
 - 标题翻译只由阅读页开关触发；译文变化局部更新卡片，不重绘整个列表。请求超时后按有界
   退避重试，连续失败达到上限后保留 failed 状态并停止自动重试，阅读器提供手动重试；源语言

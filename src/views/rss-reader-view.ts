@@ -11,6 +11,9 @@ import {
 import type RssReaderPlugin from "../main";
 import { RSS_READER_VIEW_TYPE } from "../constants";
 import { formatDate, formatNumber, t } from "../i18n";
+import { cleanTitleText } from "../models/title-text";
+import { correctionDisplayTitle } from "../models/publication-notice";
+import { interestRate } from "./interest-analysis";
 import {
   ITEM_STATUSES,
   type ItemQuery,
@@ -188,6 +191,10 @@ export class RssReaderView extends ItemView {
       this.registerReaderScrollListener(container);
       const cardLayout = cardLayoutOptions(this.plugin.settings);
       container.toggleClass(
+        "rss-reader--card-dynamic-height",
+        this.plugin.settings.cardDynamicHeight,
+      );
+      container.toggleClass(
         "rss-reader--card-metadata",
         cardLayout.showMetadata,
       );
@@ -354,6 +361,9 @@ export class RssReaderView extends ItemView {
         cls: this.status === status ? "rss-reader__basket is-active" : "rss-reader__basket",
         attr: {
           "aria-pressed": String(this.status === status),
+          title: status === "unread" ? t("reader.status_unscreened") :
+            status === "interested" || status === "archived" ?
+              t("reader.status_positive") : t("reader.status_negative"),
         },
       });
       button.createSpan({ text: statusLabel(status) });
@@ -381,7 +391,7 @@ export class RssReaderView extends ItemView {
       text: this.readerCaptionText(),
     });
 
-    const actions = container.createDiv({
+    const actions = controls.createDiv({
       cls: "rss-reader__mode-switch",
     });
     this.readerModeActions = actions;
@@ -534,8 +544,8 @@ export class RssReaderView extends ItemView {
   }
 
   private renderItemCard(container: HTMLElement, item: RssItem): void {
-    const layout = cardLayoutOptions(this.plugin.settings);
     const presentation = buildCardPresentation(item, this.plugin.settings);
+    const layout = cardLayoutOptions(this.plugin.settings, presentation);
     const card = container.createDiv({ cls: "rss-reader__item" });
     card.dataset.itemId = String(item.id);
     const content = card.createDiv({
@@ -758,18 +768,39 @@ export class RssReaderView extends ItemView {
   }
 
   private renderTitle(container: HTMLElement, item: RssItem): void {
-    const title =
+    const title = cleanTitleText(
       this.translationEnabled && item.translatedTitle
         ? item.translatedTitle
-        : item.title;
+        : item.title,
+    );
     const heading = container.createEl("h3", {
       attr: { title },
     });
-    if (titleContainsMath(title) && !this.mathJaxReady) {
-      heading.appendText(title);
+    const noticeTitle = correctionDisplayTitle(item.title, title);
+    container.toggleClass("rss-reader__item-title--notice", noticeTitle !== null);
+    if (noticeTitle !== null) {
+      heading.createSpan({ cls: "rss-reader__notice-badge", text: t("card.correction") });
+      heading.appendText(" ");
+    }
+    const displayedTitle = noticeTitle ?? title;
+    if (titleContainsMath(displayedTitle) && !this.mathJaxReady) {
+      heading.appendText(displayedTitle);
       this.ensureMathJaxLoaded();
-    } else if (renderMixedMathTitle(heading, title)) {
+    } else if (renderMixedMathTitle(heading, displayedTitle)) {
       this.scheduleMathFlush();
+    }
+    if (noticeTitle !== null) {
+      const details = container.createEl("details", { cls: "rss-reader__notice-details" });
+      details.createEl("summary", { text: t("card.correction_details") });
+      details.createEl("p", { text: t("card.full_original_title", { title: cleanTitleText(item.title) }) });
+      if (this.translationEnabled && item.translatedTitle) {
+        details.createEl("p", { text: t("card.full_translated_title", { title }) });
+      }
+      const card = container.closest<HTMLElement>(".rss-reader__item");
+      card?.removeClass("rss-reader__item--expanded-notice");
+      this.registerDomEvent(details, "toggle", () => {
+        card?.toggleClass("rss-reader__item--expanded-notice", details.open);
+      });
     }
     if (
       this.translationEnabled &&
@@ -1251,7 +1282,7 @@ export class RssReaderView extends ItemView {
       container.createEl("p", {
         cls: "rss-reader__caption",
         text: t("feed.last_summary", {
-          date: primitiveText(summary.finishedAt, ""),
+          date: typeof summary.finishedAt === "string" ? formatDate(summary.finishedAt) : "—",
           success: primitiveText(summary.successFeeds, "0"),
           total: primitiveText(summary.totalFeeds, "0"),
           newItems: primitiveText(summary.totalNewItems, "0"),
@@ -1409,17 +1440,17 @@ export class RssReaderView extends ItemView {
         days: this.plugin.settings.hiddenExpireDays,
       }),
     });
+    container.createEl("p", {
+      cls: "rss-reader__caption",
+      text: t("analytics.interest_rate_formula"),
+    });
     const allRows: Array<Record<string, unknown> & { rate: number }> =
       this.plugin.repository
       .listFeedStats()
       .map((row) => {
-        const interested = Number(row.interested_count ?? 0);
-        const archived = Number(row.archived_count ?? 0);
-        const hidden = Number(row.hidden_count ?? 0);
-        const denominator = interested + archived + hidden;
         return {
           ...row,
-          rate: denominator ? (interested + archived) / denominator : 0,
+          rate: interestRate(row),
         };
       })
       .sort((left, right) => right.rate - left.rate);

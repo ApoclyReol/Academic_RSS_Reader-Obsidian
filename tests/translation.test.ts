@@ -21,6 +21,7 @@ import {
   type TranslationProvider,
 } from "../src/services/translation-provider";
 import { MemoryAdapter } from "./helpers/memory-adapter";
+import type { TranslationRecord } from "../src/models/domain";
 
 const timerWindow = new HappyWindow() as unknown as Pick<
   Window,
@@ -48,6 +49,68 @@ describe("translation helpers", () => {
   it("invalidates cache when source text changes", () => {
     expect(hashText("same")).toBe(hashText("same"));
     expect(hashText("same")).not.toBe(hashText("changed"));
+  });
+
+  async function translationFixture(sourceText: string, status: TranslationRecord["status"], targetLanguage = "zh-CN") {
+    const adapter = new MemoryAdapter();
+    const database = new RssDatabase(adapter, "Data/rss-reader.sqlite3");
+    await database.initialize();
+    resources.push({ database, adapter });
+    const repository = new RssRepository(database);
+    const feedId = await repository.addFeed({ name: "Journal", url: "https://example.com/rss", enabled: true });
+    const { insertedIds } = await repository.upsertParsedItems(feedId, [{
+      stableGuid: "cache-guid", title: "A current title", titleNorm: "acurrenttitle", authors: "Alice",
+      journal: "Journal", year: "2026", doi: "", link: "", pubDate: "", summary: "",
+    }]);
+    const id = insertedIds[0]!;
+    await repository.upsertTranslationTask({
+      itemId: id, field: "title", sourceText, sourceHash: hashText(sourceText), targetLanguage,
+      translatedText: status === "succeeded" ? "缓存译文" : null,
+      sourceLanguage: "en", provider: "google-web", status, attemptCount: 0, lastError: null, translatedAt: 123,
+    });
+    const translate = vi.fn(async (_text: string, _source: string, _target: string) => ({
+      translatedText: "<b>新译文</b>&#x20;标题", detectedSourceLanguage: "en",
+    }));
+    const service = new TranslationService(repository, { id: "google-web", translate }, () => DEFAULT_SETTINGS, timerWindow);
+    return { database, repository, id, service, translate };
+  }
+
+  it("reuses tag-only cached sources, preserves their snapshot, and allows forced retranslation", async () => {
+    const source = "<strong>A current</strong> title&#x20;";
+    const { repository, id, service, translate } = await translationFixture(source, "succeeded");
+    try {
+      await service.requestManual(id, "title");
+      expect(translate).not.toHaveBeenCalled();
+      expect(repository.getTranslation(id, "title", "zh-CN")).toMatchObject({ sourceText: source, sourceHash: hashText(source), translatedAt: 123 });
+      await service.requestManual(id, "title", true);
+      await waitForCondition(() => repository.getTranslation(id, "title", "zh-CN")?.status === "succeeded");
+      expect(translate).toHaveBeenCalledWith("A current title", "auto", "zh-CN");
+      expect(repository.getTranslation(id, "title", "zh-CN")?.translatedText).toBe("新译文 标题");
+      await service.requestManual(id, "title", true);
+      await waitForCondition(() => translate.mock.calls.length === 2 && repository.getTranslation(id, "title", "zh-CN")?.status === "succeeded");
+      expect(translate).toHaveBeenCalledTimes(2);
+    } finally { await service.stop(); }
+  });
+
+  it("refreshes changed succeeded sources instead of displaying their old translation", async () => {
+    const { repository, id, service, translate } = await translationFixture("A previous title", "succeeded");
+    try {
+      expect(repository.getItem(id)?.translatedTitle).toBeNull();
+      await service.requestManual(id, "title");
+      await waitForCondition(() => repository.getTranslation(id, "title", "zh-CN")?.status === "succeeded");
+      expect(translate).toHaveBeenCalledWith("A current title", "auto", "zh-CN");
+      expect(repository.getItem(id)?.translatedTitle).toBe("新译文 标题");
+    } finally { await service.stop(); }
+  });
+
+  it("resumes stale pending tasks with current text and their original target language", async () => {
+    const { repository, id, service, translate } = await translationFixture("An obsolete title", "pending", "ja");
+    try {
+      await service.initialize();
+      await waitForCondition(() => repository.getTranslation(id, "title", "ja")?.status === "succeeded");
+      expect(translate).toHaveBeenCalledWith("A current title", "auto", "ja");
+      expect(repository.getTranslation(id, "title", "zh-CN")).toBeNull();
+    } finally { await service.stop(); }
   });
 
   it("bounds automatic retries and keeps the failed task for manual retry", async () => {

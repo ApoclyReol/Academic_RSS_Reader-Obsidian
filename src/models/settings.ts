@@ -8,6 +8,7 @@ export interface RssReaderSettings {
   cardShowDoi: boolean;
   cardShowAbstract: boolean;
   cardShowGraphicalAbstract: boolean;
+  cardDynamicHeight: boolean;
   targetLanguage: TargetLanguage;
   googleTranslationDisclosureAccepted: boolean;
   llmBaseUrl: string;
@@ -44,6 +45,7 @@ export const DEFAULT_SETTINGS: RssReaderSettings = {
   cardShowDoi: false,
   cardShowAbstract: false,
   cardShowGraphicalAbstract: true,
+  cardDynamicHeight: false,
   targetLanguage: "zh-CN",
   googleTranslationDisclosureAccepted: false,
   llmBaseUrl: "",
@@ -103,6 +105,10 @@ export function normalizeSettings(
     cardShowGraphicalAbstract: booleanValue(
       stored.cardShowGraphicalAbstract,
       DEFAULT_SETTINGS.cardShowGraphicalAbstract,
+    ),
+    cardDynamicHeight: booleanValue(
+      stored.cardDynamicHeight,
+      DEFAULT_SETTINGS.cardDynamicHeight,
     ),
     targetLanguage: isSupportedTargetLanguage(stored.targetLanguage)
       ? stored.targetLanguage

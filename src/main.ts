@@ -617,6 +617,7 @@ export default class RssReaderPlugin extends Plugin {
         }), 10_000);
       }
       const repository = new RssRepository(database);
+      await repository.repairTitleMarkup();
       const identityRepair = await repository.repairLegacyItemIdentity();
       if (identityRepair.removedItems > 0) {
         new Notice(t("database.identity_repaired", {

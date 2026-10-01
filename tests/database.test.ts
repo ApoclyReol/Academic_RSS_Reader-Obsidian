@@ -21,9 +21,11 @@ import {
 import {
   CREATE_SCHEMA_SQL,
   SCHEMA_MIGRATIONS,
+  SCHEMA_VERSION,
 } from "../src/database/schema";
 import type { ItemSort } from "../src/models/domain";
 import { RssRepository } from "../src/repositories/rss-repository";
+import { interestRate } from "../src/views/interest-analysis";
 import {
   parseFeed,
   stableGuid,
@@ -55,7 +57,7 @@ describe("database and repository", () => {
     const versions = database.query<{ version: number }>(
       "SELECT version FROM schema_migrations ORDER BY version",
     );
-    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5]);
+    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6]);
     const feedColumns = database.query<{ name: string }>(
       "PRAGMA table_info(feeds)",
     );
@@ -121,7 +123,7 @@ describe("database and repository", () => {
     const migratedRepository = new RssRepository(migrated);
     expect(migrated.query<{ version: number }>(
       "SELECT MAX(version) AS version FROM schema_migrations",
-    )[0]?.version).toBe(5);
+    )[0]?.version).toBe(SCHEMA_VERSION);
     expect(migratedRepository.getFeed(feedId)?.journalName).toBe("Legacy feed");
     expect(migratedRepository.getItem(itemId, "zh-CN")).toMatchObject({
       itemStatus: "interested",
@@ -134,7 +136,7 @@ describe("database and repository", () => {
     )).toBeNull();
     expect(migrated.query("PRAGMA foreign_key_check")).toHaveLength(0);
     const backups = await legacyAdapter.list("Legacy/backups");
-    expect(backups.files.some((path) => path.includes("before-schema5-"))).toBe(true);
+    expect(backups.files.some((path) => path.includes(`before-schema${SCHEMA_VERSION}-`))).toBe(true);
     migrated.close();
     legacyAdapter.dispose();
   });
@@ -162,14 +164,47 @@ describe("database and repository", () => {
     const migratedRepository = new RssRepository(migrated);
     expect(migrated.query<{ version: number }>(
       "SELECT MAX(version) AS version FROM schema_migrations",
-    )[0]?.version).toBe(5);
+    )[0]?.version).toBe(SCHEMA_VERSION);
     expect(migratedRepository.listItems({ status: "unread" })[0]?.imageUrl)
       .toBeNull();
     expect((await legacyAdapter.list("Legacy4/backups")).files.some(
-      (path) => path.includes("before-schema5-"),
+      (path) => path.includes(`before-schema${SCHEMA_VERSION}-`),
     )).toBe(true);
     migrated.close();
     legacyAdapter.dispose();
+  });
+
+  it("migrates schema 5 translation provenance and repairs every cached title language", async () => {
+    const legacyAdapter = new MemoryAdapter();
+    const databasePath = "Legacy5/rss-reader.sqlite3";
+    await createLegacyDatabase(legacyAdapter, databasePath, 5);
+    const legacy = new DatabaseSync(legacyAdapter.getFullPath(databasePath));
+    const title = "<span>Legacy</span> paper&#x20;";
+    legacy.prepare("INSERT INTO items(stable_guid,title,title_norm,item_status) VALUES ('legacy5',?,?,'archived')")
+      .run(title, "oldnorm");
+    for (const language of ["zh-CN", "ja"]) {
+      legacy.prepare(`INSERT INTO translations(item_id,field,source_text,source_hash,target_language,
+        translated_text,provider,status,translated_at) VALUES (1,'title',?,'raw-hash',?,'<b>译文</b>','google-web','succeeded',321)`)
+        .run(title, language);
+    }
+    legacy.close();
+    const migrated = new RssDatabase(legacyAdapter, databasePath);
+    try {
+      await migrated.initialize({ createIfMissing: false });
+      const migratedRepository = new RssRepository(migrated);
+      expect(migrated.get<{ source_normalized: string }>("SELECT source_normalized FROM translations")?.source_normalized).toBe(title);
+      await migratedRepository.repairTitleMarkup();
+      for (const language of ["zh-CN", "ja"]) {
+        expect(migratedRepository.getItem(1, language)).toMatchObject({ title: "Legacy paper", itemStatus: "archived", translatedTitle: "译文" });
+        expect(migratedRepository.getTranslation(1, "title", language)).toMatchObject({ sourceText: title, sourceHash: "raw-hash", translatedAt: 321 });
+      }
+      const backups = (await legacyAdapter.list("Legacy5/backups")).files;
+      expect(backups.some((path) => path.includes("before-schema6-"))).toBe(true);
+      expect(backups.some((path) => path.includes("before-title-cleanup-"))).toBe(true);
+    } finally {
+      migrated.close();
+      legacyAdapter.dispose();
+    }
   });
 
   it("reuses a v3 ScienceDirect item on the first update after migration", async () => {
@@ -302,7 +337,7 @@ describe("database and repository", () => {
     ).toBe(false);
     restored.close();
     const backups = await rollbackAdapter.list("Rollback/backups");
-    expect(backups.files.some((path) => path.includes("before-schema5-"))).toBe(true);
+    expect(backups.files.some((path) => path.includes(`before-schema${SCHEMA_VERSION}-`))).toBe(true);
     candidate.close();
     rollbackAdapter.dispose();
   });
@@ -537,6 +572,31 @@ describe("database and repository", () => {
     expect(repository.countByStatus().hidden).toBe(1);
     await repository.setItemStatus(stored.insertedIds, "unread");
     expect(repository.countByStatus().unread).toBe(1);
+  });
+
+  it("counts all decided statuses in feed interest analysis", async () => {
+    const feedId = await repository.addFeed({
+      name: "Interest counts", url: "https://example.com/interest-counts", enabled: true,
+    });
+    const stored = await repository.upsertParsedItems(feedId,
+      Array.from({ length: 5 }, (_, index) => ({
+        stableGuid: `interest-count-${index}`, title: `Interest count ${index}`,
+        titleNorm: `interest count ${index}`, authors: "Author", journal: "Interest counts",
+        year: "2026", doi: "", link: "", pubDate: "", summary: "",
+      })),
+    );
+    await repository.setItemStatus([stored.insertedIds[1]!], "interested");
+    await repository.setItemStatus([stored.insertedIds[2]!], "archived");
+    await repository.setItemStatus([stored.insertedIds[3]!], "hidden");
+    await repository.setItemStatus([stored.insertedIds[4]!], "expired");
+    const stats = repository.listFeedStats()[0]!;
+    expect(stats).toMatchObject({
+      total_count: 5, unread_count: 1, interested_count: 1, archived_count: 1,
+      hidden_count: 1, expired_count: 1,
+    });
+    expect(interestRate(stats)).toBe(0.5);
+    await repository.setItemStatus([stored.insertedIds[3]!], "expired");
+    expect(interestRate(repository.listFeedStats()[0]!)).toBe(0.5);
   });
 
   it("moves every remaining item between baskets and returns a complete undo set", async () => {
@@ -1328,10 +1388,10 @@ describe("database and repository", () => {
           `
           INSERT INTO translations(
             item_id,field,source_text,target_language,provider,
-            source_hash,status,attempt_count
+            source_hash,status,attempt_count,source_normalized
           ) VALUES (
             $itemId,'title',$sourceText,'zh-CN','google-web',
-            $sourceHash,$status,0
+            $sourceHash,$status,0,$sourceText
           )
           `,
           {
@@ -1432,7 +1492,7 @@ class CorruptingCopyAdapter extends MemoryAdapter {
 async function createLegacyDatabase(
   adapter: MemoryAdapter,
   path: string,
-  version: 2 | 3 | 4,
+  version: 2 | 3 | 4 | 5,
 ): Promise<void> {
   const directory = path.split("/").slice(0, -1).join("/");
   await adapter.mkdir(directory);

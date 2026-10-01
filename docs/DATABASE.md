@@ -1,7 +1,7 @@
 # 数据库设计
 
-本文描述 Academic RSS Reader v1.7.1 的有效 schema 5。schema 事实源为
-`src/database/schema.ts`，业务 SQL 事实源为 `src/repositories/rss-repository.ts`。
+本文描述 Academic RSS Reader v1.8.0 的有效 schema 6。schema 事实源为
+`src/database/schema.ts`，业务 SQL 事实源为 `src/repositories/`。
 
 ## 存储位置与运行参数
 
@@ -117,7 +117,7 @@ erDiagram
 
 - `stable_guid` 是入库后保持稳定的内部身份；命中兼容候选时保留旧值，避免阅读状态和关联断裂。
 - `doi` 是最强的出版物身份候选；`link` 保留可打开的原文地址，并参与旧记录兼容查找。
-- `title_norm` 是规范化后的标题，只用于查找和弱身份候选；展示始终使用原始 `title`。
+- `title_norm` 是规范化后的标题，只用于查找和弱身份候选；展示使用清理标签后的 `title`。
 - `year` 是可独立提取的粗粒度身份字段；`pub_date` 是用于展示和排序的完整发布日期。RSS
   只提供年份或完整日期无法解析时，仍需保留 `year`。
 
@@ -201,12 +201,17 @@ erDiagram
 `succeeded`、`failed`。`source_hash` 防止源文本变化后复用旧译文。
 
 其他字段包括 `source_text`、`translated_text`、`source_language`、`provider`、
-`attempt_count`、`last_error` 和 `translated_at`。
+`attempt_count`、`last_error`、`translated_at` 和 `source_normalized`。
 
 `source_text` 保存创建或刷新翻译任务时的源文本快照，不能简单地用文章当前标题或摘要替代；
 `source_hash` 用于比较源版本。`source_language`、`provider` 和 `translated_at` 是翻译来源
 与完成时间的追溯信息，即使当前只配置一个提供方也继续保留。`attempt_count` 与
 `last_error` 用于失败重试和问题诊断。
+
+`source_normalized` 保存来源快照的可复用文本：标题解码并清理 HTML，摘要保持原文。
+卡片和译文搜索只连接它与当前标题或摘要相符的缓存；已变化的来源不会继续显示旧译文。
+旧来源快照的标签清理不改写 `source_text`、`source_hash` 或 `translated_at`。任务执行前复核当前
+来源，迟到响应通过来源 hash 条件写入，不能覆盖新来源任务。
 
 数据库打开时会把遗留的 `translating` 重置为 `pending`，由 Translation Service 恢复队列。
 
@@ -216,12 +221,13 @@ erDiagram
 
 - `last_update_summary`：最近一次实际执行的订阅更新摘要。
 - `legacy_identity_repair_v3`：旧身份兼容整理是否已完成。
+- `title_markup_repair_v1`：Repository 在服务启动前完成历史标题/缓存标签整理后写入 `completed`；恢复到无此标记的备份后重新执行。
 
 新增 key 时需要在代码和本文说明用途、写入方和失效条件。
 
 ### `schema_migrations`
 
-记录已应用 schema 版本和时间。当前最新版本为 5。`PRAGMA user_version` 同步写入，但迁移
+记录已应用 schema 版本和时间。当前最新版本为 6。`PRAGMA user_version` 同步写入，但迁移
 判断以 `schema_migrations` 为主。
 
 ## 索引
@@ -240,7 +246,7 @@ erDiagram
 
 `idx_items_identity_fallback` 是
 `idx_items_identity_fallback_journal` 的三字段前缀，也是已发布 schema 4 的迁移产物。
-schema 5 暂时保留二者不代表它们必须永久并存；只有在真实查询上完成
+schema 6 暂时保留二者不代表它们必须永久并存；只有在真实查询上完成
 `EXPLAIN QUERY PLAN`、读写基准和身份兼容回归测试后，才可通过新 migration 删除前者。
 
 新增高频查询前先检查现有索引；索引变化必须通过 migration 追加。
@@ -294,6 +300,14 @@ schema 5 的主要变化：
 - 旧文章不回填图片，后续订阅更新发现图片时才更新对应文献。
 - 无图值写入 `NULL`；订阅更新会把同一订阅历史遗留的空字符串规范化为 `NULL`。
 
+schema 6 的主要变化：
+
+- 增加 `translations.source_normalized`，初始回填来源快照；标题清理由 Repository 完成。
+- 服务启动前扫描已有标题与所有目标语言缓存。需要修改时先创建 `before-title-cleanup-*` 备份，
+  再在同一写事务中清理标题、规范化查找文本和缓存译文，并写入一次性完成标记。
+- 保留文章 ID、GUID、状态与关联，保留翻译来源快照、hash 和完成时间；备份失败不写入，
+  清理事务失败全部回滚。
+
 升级前通过 `VACUUM INTO` 在 `backups/` 创建对应版本的 `before-schema*` 快照。迁移失败时恢复该
 快照。已发布 migration 不得修改、删除或重排；下一次变更应提高 `SCHEMA_VERSION` 并追加
 新 migration。
@@ -310,6 +324,7 @@ schema 5 的主要变化：
 保护备份前缀包括：
 
 - `before-schema*`：schema 迁移前；
+- `before-title-cleanup-*`：历史标题与缓存文本清理前；
 - `before-switch-*`：切换数据目录前；
 - `before-restore-*`：恢复前；
 - `manual-*`：用户手动创建。
