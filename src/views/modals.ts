@@ -24,6 +24,14 @@ export interface RecommendationModalCallbacks {
   ) => void | Promise<void>;
 }
 
+// Obsidian mounts modals outside the reader view, so they need their own scope.
+class RssReaderModal extends Modal {
+  constructor(app: RssReaderPlugin["app"]) {
+    super(app);
+    this.modalEl.addClass("rss-reader-modal");
+  }
+}
+
 export function confirmGoogleTranslation(
   app: RssReaderPlugin["app"],
 ): Promise<boolean> {
@@ -33,7 +41,7 @@ export function confirmGoogleTranslation(
   });
 }
 
-class GoogleTranslationConsentModal extends Modal {
+class GoogleTranslationConsentModal extends RssReaderModal {
   private resolved = false;
 
   constructor(
@@ -80,7 +88,7 @@ class GoogleTranslationConsentModal extends Modal {
   }
 }
 
-export class FeedModal extends Modal {
+export class FeedModal extends RssReaderModal {
   constructor(
     private readonly plugin: RssReaderPlugin,
     private readonly feed: Feed | null,
@@ -143,7 +151,7 @@ export class FeedModal extends Modal {
   }
 }
 
-export class FeedImportModal extends Modal {
+export class FeedImportModal extends RssReaderModal {
   private eventScope: Component | null = null;
 
   constructor(
@@ -236,7 +244,7 @@ export class FeedImportModal extends Modal {
   }
 }
 
-export class GraphicalAbstractModal extends Modal {
+export class GraphicalAbstractModal extends RssReaderModal {
   private eventScope: Component | null = null;
 
   constructor(
@@ -284,7 +292,7 @@ export class GraphicalAbstractModal extends Modal {
   }
 }
 
-export class RecommendationModal extends Modal {
+export class RecommendationModal extends RssReaderModal {
   constructor(
     private readonly plugin: RssReaderPlugin,
     private readonly callbacks: RecommendationModalCallbacks,
@@ -450,7 +458,7 @@ export class RecommendationModal extends Modal {
   }
 }
 
-export class KeywordModal extends Modal {
+export class KeywordModal extends RssReaderModal {
   constructor(private readonly plugin: RssReaderPlugin) {
     super(plugin.app);
   }
@@ -529,7 +537,7 @@ export class KeywordModal extends Modal {
   }
 }
 
-export class ConfirmModal extends Modal {
+export class ConfirmModal extends RssReaderModal {
   constructor(
     app: RssReaderPlugin["app"],
     private readonly message: string,

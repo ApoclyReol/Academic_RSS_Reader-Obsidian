@@ -36,6 +36,7 @@
 }
 
 .rss-reader button,
+.rss-reader-modal button,
 .academic-rss-reader-settings button {
   align-items: center;
   cursor: pointer;
@@ -55,6 +56,11 @@
 .rss-reader select:focus-visible,
 .rss-reader summary:focus-visible,
 .rss-reader textarea:focus-visible,
+.rss-reader-modal button:focus-visible,
+.rss-reader-modal input:focus-visible,
+.rss-reader-modal select:focus-visible,
+.rss-reader-modal summary:focus-visible,
+.rss-reader-modal textarea:focus-visible,
 .academic-rss-reader-settings button:focus-visible,
 .academic-rss-reader-settings input:focus-visible,
 .academic-rss-reader-settings select:focus-visible,
@@ -64,6 +70,7 @@
 }
 
 .rss-reader button:not(:disabled):hover,
+.rss-reader-modal button:not(:disabled):hover,
 .academic-rss-reader-settings button:not(:disabled):hover {
   background-color: var(--background-modifier-hover);
   border-color: var(--interactive-accent);
@@ -72,11 +79,23 @@
 }
 
 .rss-reader button.is-active:not(:disabled):hover,
+.rss-reader-modal button.mod-cta:not(:disabled):hover,
 .academic-rss-reader-settings button.is-active:not(:disabled):hover {
   background-color: var(--interactive-accent-hover);
 }
 
+.rss-reader-modal button.mod-warning:not(:disabled):hover {
+  background-color: var(--background-modifier-error-hover);
+  border-color: var(--text-error);
+}
+
+.rss-reader-modal button:not(:disabled):active {
+  box-shadow: none;
+  transform: translateY(1px);
+}
+
 .rss-reader button:disabled,
+.rss-reader-modal button:disabled,
 .academic-rss-reader-settings button:disabled {
   cursor: not-allowed;
   transform: none;
