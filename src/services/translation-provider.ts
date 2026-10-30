@@ -14,7 +14,9 @@ export interface TranslationResult {
 }
 
 export interface TranslationProvider {
-  readonly id: "google-web";
+  readonly id: "google-web" | "llm";
+  readonly requestTimeoutMs?: number;
+  validate?(): void;
   translate(
     text: string,
     sourceLanguage: string,
@@ -122,7 +124,7 @@ export class GoogleWebTranslationProvider implements TranslationProvider {
   }
 }
 
-function retryAfterMilliseconds(
+export function retryAfterMilliseconds(
   headers: Record<string, string>,
 ): number | null {
   const value = Object.entries(headers).find(

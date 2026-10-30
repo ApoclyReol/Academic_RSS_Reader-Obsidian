@@ -72,7 +72,7 @@ export class TranslationService {
 
   constructor(
     private readonly repository: RssRepository,
-    private readonly provider: TranslationProvider,
+    private provider: TranslationProvider,
     private readonly getSettings: () => RssReaderSettings,
     private readonly timerWindow: TranslationTimerWindow,
     private readonly operationCoordinator?: DatabaseOperationCoordinator,
@@ -103,6 +103,7 @@ export class TranslationService {
   private readonly maxAttempts: number;
   private readonly requestTimeoutMs: number;
   private readonly retryDelaysMs: readonly number[];
+  private cancelRequest: (() => void) | null = null;
   private processingTimer: number | null = null;
   private cooldownUntil = 0;
   private consecutiveRetryableFailures = 0;
@@ -134,9 +135,28 @@ export class TranslationService {
 
   cancel(): void {
     this.stopped = true;
+    this.cancelRequest?.();
     this.generation += 1;
     this.queue = [];
     this.clearProcessingTimer();
+  }
+
+  validateConfiguration(): void {
+    this.provider.validate?.();
+  }
+
+  async setProvider(provider: TranslationProvider): Promise<void> {
+    await this.stop();
+    this.provider = provider;
+    await this.repository.resetInterruptedTranslations();
+    await this.initialize();
+  }
+
+  async clearTitleCache(): Promise<void> {
+    await this.stop();
+    await this.repository.clearTitleTranslationCache();
+    await this.repository.resetInterruptedTranslations();
+    await this.initialize();
   }
 
   isBusy(): boolean {
@@ -237,7 +257,7 @@ export class TranslationService {
       translatedText: resetAttempts ? null : (existing?.translatedText ?? null),
       sourceLanguage: resetAttempts ? null : (existing?.sourceLanguage ?? null),
       targetLanguage,
-      provider: "google-web",
+      provider: this.provider.id,
       sourceHash,
       status: "pending",
       attemptCount: resetAttempts ? 0 : (existing?.attemptCount ?? 0),
@@ -370,6 +390,7 @@ export class TranslationService {
     let current: TranslationRecord = {
       ...record,
       status: "translating",
+      provider: this.provider.id,
     };
     if (this.stopped || generation !== this.generation) {
       return;
@@ -444,13 +465,17 @@ export class TranslationService {
     sourceText: string,
     targetLanguage: string,
   ): Promise<TranslationResult> {
+    const timeoutMs = this.provider.requestTimeoutMs ?? this.requestTimeoutMs;
+    const cancelled = new Promise<never>((_resolve, reject) => {
+      this.cancelRequest = () => reject(new TranslationRequestError(t("translation.cancelled"), { kind: "client", retryable: false }));
+    });
     let timeoutId: number | null = null;
     const timeout = new Promise<never>((_resolve, reject) => {
       timeoutId = this.timerWindow.setTimeout(() => {
         reject(
           new TranslationRequestError(
             t("ui.translation_request_timed_out", {
-              seconds: Math.max(1, Math.ceil(this.requestTimeoutMs / 1_000)),
+              seconds: Math.max(1, Math.ceil(timeoutMs / 1_000)),
             }),
             {
               kind: "timeout",
@@ -458,14 +483,16 @@ export class TranslationService {
             },
           ),
         );
-      }, this.requestTimeoutMs);
+      }, timeoutMs);
     });
     try {
       return await Promise.race([
         this.provider.translate(sourceText, "auto", targetLanguage),
         timeout,
+        cancelled,
       ]);
     } finally {
+      this.cancelRequest = null;
       if (timeoutId !== null) {
         this.timerWindow.clearTimeout?.(timeoutId);
       }

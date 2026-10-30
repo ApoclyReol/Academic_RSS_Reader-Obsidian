@@ -110,7 +110,7 @@ export function toTranslation(row: RepositoryRow): TranslationRecord {
       ? textValue(row.source_language)
       : null,
     targetLanguage: textValue(row.target_language),
-    provider: "google-web",
+    provider: row.provider === "llm" ? "llm" : "google-web",
     sourceHash: textValue(row.source_hash),
     status: textValue(row.status) as TranslationStatus,
     attemptCount: Number(row.attempt_count),

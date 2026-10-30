@@ -238,6 +238,12 @@ export class RssReaderView extends ItemView {
     }
   }
 
+  resetTitleTranslationState(disable = false): void {
+    if (disable) this.translationEnabled = false;
+    this.requestedTitleIds.clear();
+    this.titleObserver?.disconnect();
+  }
+
   refreshTranslatedTitle(
     itemId: number,
     field: "title" | "abstract",
@@ -400,8 +406,10 @@ export class RssReaderView extends ItemView {
       this.translationEnabled ? t("ui.show_original") : t("ui.translate_titles"),
       "languages",
       async () => {
+        if (!this.translationEnabled) this.plugin.translationService.validateConfiguration();
         if (
           !this.translationEnabled &&
+          this.plugin.settings.translationProvider !== "llm" &&
           !this.plugin.settings.googleTranslationDisclosureAccepted &&
           !(await confirmGoogleTranslation(this.app))
         ) {
@@ -409,6 +417,7 @@ export class RssReaderView extends ItemView {
         }
         if (
           !this.translationEnabled &&
+          this.plugin.settings.translationProvider !== "llm" &&
           !this.plugin.settings.googleTranslationDisclosureAccepted
         ) {
           this.plugin.settings.googleTranslationDisclosureAccepted = true;
@@ -967,6 +976,7 @@ export class RssReaderView extends ItemView {
     this.titleObserver?.disconnect();
     this.titleObserver = new IntersectionObserverConstructor(
       (entries) => {
+        if (!this.translationEnabled) return;
         const visibleIndexes = entries
           .filter((entry) => entry.isIntersecting)
           .map((entry) =>

@@ -103,7 +103,7 @@ export interface TranslationRecord {
   translatedText: string | null;
   sourceLanguage: string | null;
   targetLanguage: string;
-  provider: "google-web";
+  provider: "google-web" | "llm";
   sourceHash: string;
   status: TranslationStatus;
   attemptCount: number;

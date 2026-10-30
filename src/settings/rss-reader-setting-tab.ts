@@ -10,10 +10,12 @@ import type { SettingDefinitionItem } from "obsidian";
 import type RssReaderPlugin from "../main";
 import { t } from "../i18n";
 import {
+  DEFAULT_TRANSLATION_PROMPT,
   isSupportedTargetLanguage,
   SUPPORTED_TARGET_LANGUAGES,
   type TargetLanguage,
 } from "../models/settings";
+import { ConfirmModal } from "../views/modals";
 import { DirectorySuggest } from "./directory-suggest";
 
 const DATABASE_FILE_NAME = ["rss", "reader.sqlite3"].join("-");
@@ -168,16 +170,19 @@ export class RssReaderSettingTab extends PluginSettingTab {
       },
       {
         type: "group",
-        heading: t("ui.experimental_web_translation"),
+        heading: t("translation.settings_heading"),
         cls: SETTINGS_CLASS,
         items: [
           {
+            name: t("translation.provider"),
+            desc: t("translation.provider_help"),
+            control: {
+              type: "dropdown", key: "translationProvider", defaultValue: "google-web",
+              options: { "google-web": t("translation.google"), llm: t("translation.llm") },
+            },
+          },
+          {
             name: t("ui.translation_target_language"),
-            desc: `${t(
-              "ui.uses_an_unofficial_google_web_endpoint_without_authentication_it_may_be_",
-            )} ${t("ui.simplified_chinese_is_the_default_and_recommended_target")} ${t(
-              "ui.translation_target_language_code_description",
-            )}`,
             control: {
               type: "dropdown",
               key: "targetLanguage",
@@ -189,6 +194,45 @@ export class RssReaderSettingTab extends PluginSettingTab {
                 ]),
               ),
             },
+          },
+          {
+            name: t("ui.api_endpoint"),
+            desc: t("translation.endpoint_help"),
+            visible: () => this.plugin.settings.translationProvider === "llm",
+            control: { type: "text", key: "translationLlmBaseUrl", placeholder: t("ui.llm_endpoint_placeholder") },
+          },
+          {
+            name: t("ui.api_key"),
+            desc: t("translation.secret_help"),
+            visible: () => this.plugin.settings.translationProvider === "llm",
+            render: (setting) => this.renderSecretSetting(setting, "translationLlmSecretId"),
+          },
+          {
+            name: t("ui.model"),
+            visible: () => this.plugin.settings.translationProvider === "llm",
+            control: { type: "text", key: "translationLlmModel", placeholder: t("ui.llm_model_placeholder") },
+          },
+          {
+            name: t("translation.prompt"),
+            desc: t("translation.prompt_help"),
+            visible: () => this.plugin.settings.translationProvider === "llm",
+            control: { type: "textarea", key: "translationLlmPrompt", defaultValue: DEFAULT_TRANSLATION_PROMPT, placeholder: DEFAULT_TRANSLATION_PROMPT },
+          },
+          {
+            name: t("translation.test"),
+            desc: t("translation.test_help"),
+            render: (setting) => {
+              setting.addButton((button) => button.setButtonText(t("ui.test")).onClick(() => {
+                this.runButtonAction(button.buttonEl, async () => {
+                  new Notice(await this.plugin.testTitleTranslation(), 10_000);
+                });
+              }));
+            },
+          },
+          {
+            name: t("translation.clear_cache"),
+            desc: t("translation.clear_cache_help"),
+            render: (setting) => this.renderClearTranslationCache(setting),
           },
         ],
       },
@@ -305,6 +349,25 @@ export class RssReaderSettingTab extends PluginSettingTab {
         this.plugin.settings.targetLanguage = value;
         refreshReader = true;
         break;
+      case "translationProvider":
+        if (value !== "google-web" && value !== "llm") return;
+        if (this.plugin.settings.translationProvider === value) return;
+        this.plugin.settings.translationProvider = value;
+        this.update();
+        break;
+      case "translationLlmBaseUrl":
+      case "translationLlmModel":
+      case "translationLlmPrompt": {
+        if (typeof value !== "string") return;
+        const normalized = value.trim() || (key === "translationLlmPrompt" ? DEFAULT_TRANSLATION_PROMPT : "");
+        if (this.plugin.settings[key] === normalized) {
+          if (key === "translationLlmPrompt" && !value.trim()) this.update();
+          return;
+        }
+        this.plugin.settings[key] = normalized;
+        if (key === "translationLlmPrompt" && !value.trim()) this.update();
+        break;
+      }
       case "llmBaseUrl":
         if (typeof value !== "string") {
           return;
@@ -505,15 +568,30 @@ export class RssReaderSettingTab extends PluginSettingTab {
     );
   }
 
-  private renderSecretSetting(setting: Setting): void {
+  private renderClearTranslationCache(setting: Setting): void {
+    setting.addButton((button) => button
+      .setButtonText(t("translation.clear_cache"))
+      .setDisabled(!this.plugin.isDatabaseReady())
+      .onClick(() => {
+        if (!this.plugin.isDatabaseReady()) return;
+        const repository = this.plugin.repository;
+        const count = repository.countTitleTranslationCache();
+        new ConfirmModal(this.app, t("translation.clear_cache_confirm", { count }), async () => {
+          await this.plugin.clearTitleTranslationCache(repository);
+          new Notice(t("translation.cache_cleared"));
+        }).open();
+      }));
+  }
+
+  private renderSecretSetting(setting: Setting, key: "llmSecretId" | "translationLlmSecretId" = "llmSecretId"): void {
     setting.addComponent((container) =>
       new SecretComponent(this.app, container)
-        .setValue(this.plugin.settings.llmSecretId)
+        .setValue(this.plugin.settings[key])
         .onChange((value) => {
-          if (this.plugin.settings.llmSecretId === value) {
+          if (this.plugin.settings[key] === value) {
             return;
           }
-          this.plugin.settings.llmSecretId = value;
+          this.plugin.settings[key] = value;
           this.scheduleSaveSettings();
         }),
     );

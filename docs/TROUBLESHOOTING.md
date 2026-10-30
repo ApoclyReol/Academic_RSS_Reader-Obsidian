@@ -47,9 +47,11 @@ Use **Load target database** only when the target already contains a valid datab
 
 ## Title translation fails
 
-Title translation uses an unofficial Google web endpoint that may be rate-limited, regionally unavailable, or changed upstream. Each request times out after 15 seconds; network, rate-limit, and server errors are attempted at most three times in total with increasing delays. After the retry budget is exhausted, automatic requests stop and the failed task remains available through **Retry translation**. A failure does not overwrite original titles and does not interrupt reading, feeds, recommendations, or analysis.
+Title translation uses Google web translation or the independently configured LLM service. Google requests time out after 15 seconds, and LLM translation requests after 45 seconds; network, rate-limit, and server errors are attempted at most three times in total with increasing delays. After the retry budget is exhausted, automatic requests stop and the failed task remains available through **Retry translation**. A failure does not overwrite original titles and does not interrupt reading, feeds, recommendations, or analysis.
 
-Use **Retry translation** after the network recovers, or disable title translation to continue using original titles. The target language is configurable in settings; source language is detected automatically.
+For LLM translation, check the endpoint, SecretStorage key, and model under **Settings → Title translation**; use **Test translation** to check a fixed sample without loading a database.
+
+Use **Retry translation** after the network recovers, or disable title translation to continue using original titles. The target language is configurable in settings; source language is detected automatically. Switching services, models, or prompts keeps existing translations. To replace them, use **Clear title translation cache** in settings, then enable title translation again. This clears titles in all target languages and preserves originals, reading states, and abstract translations.
 
 ## LLM connection testing fails
 

@@ -1,6 +1,6 @@
 # 数据库设计
 
-本文描述 Academic RSS Reader v1.8.0 的有效 schema 6。schema 事实源为
+本文描述 Academic RSS Reader v1.9.0 的有效 schema 6。schema 事实源为
 `src/database/schema.ts`，业务 SQL 事实源为 `src/repositories/`。
 
 ## 存储位置与运行参数
@@ -191,7 +191,7 @@ erDiagram
 
 ### `translations`
 
-翻译任务与缓存，复合主键为：
+翻译任务与缓存，Google 和 LLM 共用单份结果，不按服务或模型分库存储。`provider` 记录最新结果来源（`google-web` 或 `llm`），本次功能不新增 schema 版本。复合主键为：
 
 ```text
 (item_id, field, target_language)

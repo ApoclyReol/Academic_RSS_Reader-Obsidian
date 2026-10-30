@@ -92,6 +92,71 @@ describe("translation helpers", () => {
     } finally { await service.stop(); }
   });
 
+  it("keeps a single cached result when changing providers until the user clears it", async () => {
+    const { repository, id, service } = await translationFixture("A current title", "succeeded");
+    const translate = vi.fn(async () => ({ translatedText: "LLM 译文", detectedSourceLanguage: "auto" }));
+    try {
+      await service.setProvider({ id: "llm", translate });
+      await service.requestManual(id, "title");
+      expect(translate).not.toHaveBeenCalled();
+      expect(repository.getTranslation(id, "title", "zh-CN")?.provider).toBe("google-web");
+      await service.clearTitleCache();
+      expect(repository.countTitleTranslationCache()).toBe(0);
+      await service.requestManual(id, "title");
+      await waitForCondition(() => repository.getTranslation(id, "title", "zh-CN")?.status === "succeeded");
+      expect(repository.getTranslation(id, "title", "zh-CN")).toMatchObject({ provider: "llm", translatedText: "LLM 译文" });
+      expect(repository.countTitleTranslationCache()).toBe(1);
+    } finally { await service.stop(); }
+  });
+
+  it("clears title caches in all languages while preserving abstracts, originals and reading state", async () => {
+    const { repository, id, service } = await translationFixture("A current title", "succeeded");
+    try {
+      const original = repository.getItem(id)!;
+      const cached = repository.getTranslation(id, "title", "zh-CN")!;
+      await repository.upsertTranslationTask({ ...cached, targetLanguage: "ja" });
+      await repository.upsertTranslationTask({ ...cached, field: "abstract", translatedText: "摘要译文" });
+      expect(repository.countTitleTranslationCache()).toBe(2);
+      await service.clearTitleCache();
+      expect(repository.countTitleTranslationCache()).toBe(0);
+      expect(repository.getTranslation(id, "abstract", "zh-CN")?.translatedText).toBe("摘要译文");
+      expect(repository.getItem(id)).toMatchObject({ title: original.title, itemStatus: original.itemStatus, translatedTitle: null });
+    } finally { await service.stop(); }
+  });
+
+  it("does not let a late in-flight response repopulate a cleared cache", async () => {
+    const { repository, id, service } = await translationFixture("A current title", "succeeded");
+    let resolveLate!: (value: { translatedText: string; detectedSourceLanguage: string }) => void;
+    const translate = vi.fn(() => new Promise<{ translatedText: string; detectedSourceLanguage: string }>((resolve) => { resolveLate = resolve; }));
+    try {
+      await service.setProvider({ id: "llm", translate });
+      await service.requestManual(id, "title", true);
+      await waitForCondition(() => translate.mock.calls.length === 1);
+      await service.clearTitleCache();
+      resolveLate({ translatedText: "过期响应", detectedSourceLanguage: "en" });
+      await new Promise<void>((resolve) => timerWindow.setTimeout(resolve, 20));
+      expect(repository.countTitleTranslationCache()).toBe(0);
+      expect(repository.getItem(id)?.translatedTitle).toBeNull();
+    } finally { await service.stop(); }
+  });
+
+  it("restarts pending work with the new provider and ignores the old response", async () => {
+    const { repository, id, service } = await translationFixture("A current title", "succeeded");
+    let resolveLate!: (value: { translatedText: string; detectedSourceLanguage: string }) => void;
+    const oldTranslate = vi.fn(() => new Promise<{ translatedText: string; detectedSourceLanguage: string }>((resolve) => { resolveLate = resolve; }));
+    const newTranslate = vi.fn(async () => ({ translatedText: "新服务译文", detectedSourceLanguage: "en" }));
+    try {
+      await service.setProvider({ id: "google-web", translate: oldTranslate });
+      await service.requestManual(id, "title", true);
+      await waitForCondition(() => oldTranslate.mock.calls.length === 1);
+      await service.setProvider({ id: "llm", translate: newTranslate });
+      await waitForCondition(() => repository.getTranslation(id, "title", "zh-CN")?.status === "succeeded");
+      resolveLate({ translatedText: "旧服务译文", detectedSourceLanguage: "en" });
+      await new Promise<void>((resolve) => timerWindow.setTimeout(resolve, 20));
+      expect(repository.getTranslation(id, "title", "zh-CN")).toMatchObject({ provider: "llm", translatedText: "新服务译文" });
+    } finally { await service.stop(); }
+  });
+
   it("refreshes changed succeeded sources instead of displaying their old translation", async () => {
     const { repository, id, service, translate } = await translationFixture("A previous title", "succeeded");
     try {

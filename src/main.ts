@@ -25,7 +25,8 @@ import { FeedService } from "./services/feed-service";
 import { DatabaseOperationCoordinator } from "./infrastructure/database-operation-coordinator";
 import { LlmService } from "./services/llm-service";
 import { RecommendationService } from "./services/recommendation-service";
-import { GoogleWebTranslationProvider } from "./services/translation-provider";
+import { LlmTranslationProvider } from "./services/llm-translation-provider";
+import { GoogleWebTranslationProvider, type TranslationProvider } from "./services/translation-provider";
 import {
   TranslationNoticeError,
   TranslationService,
@@ -49,6 +50,7 @@ interface ServiceContext {
   recommendationService: RecommendationService;
   llmService: LlmService;
   unsubscribeTranslation: () => void;
+  translationConfiguration: string;
 }
 
 export default class RssReaderPlugin extends Plugin {
@@ -57,6 +59,7 @@ export default class RssReaderPlugin extends Plugin {
   databaseError: string | null = null;
   private context: ServiceContext | null = null;
   private settingTab: RssReaderSettingTab | null = null;
+  private translationOperation: Promise<void> = Promise.resolve();
   private automaticUpdateStarted = false;
   private lifecycleActive = false;
   private lifecycleCompletion: Promise<void> | null = null;
@@ -172,6 +175,22 @@ export default class RssReaderPlugin extends Plugin {
 
   async saveSettings(refreshReader = true): Promise<void> {
     await this.saveData(this.settings);
+    const context = this.context;
+    if (context && this.isDatabaseReady()) {
+      await this.runTranslationOperation(async () => {
+        if (this.context !== context || !this.isDatabaseReady()) return;
+        const settings = { ...this.settings };
+        const key = translationConfigurationKey(settings);
+        if (context.translationConfiguration === key) return;
+        const release = this.operationCoordinator.acquireOperation("translation");
+        try {
+          this.resetTranslationViews();
+          await context.translationService.setProvider(this.createTranslationProvider(settings));
+          context.translationConfiguration = key;
+          await this.refreshViews();
+        } finally { release(); }
+      });
+    }
     if (refreshReader) {
       await this.refreshViews();
     }
@@ -627,7 +646,7 @@ export default class RssReaderPlugin extends Plugin {
       database.setOperationCoordinator(this.operationCoordinator);
       const translationService = new TranslationService(
         repository,
-        new GoogleWebTranslationProvider(),
+        this.createTranslationProvider({ ...this.settings }),
         () => this.settings,
         timerWindow,
         this.operationCoordinator,
@@ -682,6 +701,7 @@ export default class RssReaderPlugin extends Plugin {
           timerWindow,
         ),
         unsubscribeTranslation: () => undefined,
+        translationConfiguration: translationConfigurationKey(this.settings),
       };
       context.unsubscribeTranslation = translationService.onChange((change: TranslationChange) => {
         for (const leaf of this.app.workspace.getLeavesOfType(
@@ -933,6 +953,58 @@ export default class RssReaderPlugin extends Plugin {
     this.settingTab?.update();
   }
 
+  private createTranslationProvider(settings: RssReaderSettings): TranslationProvider {
+    return settings.translationProvider === "llm"
+      ? new LlmTranslationProvider(settings, () => settings.translationLlmSecretId
+        ? (this.app.secretStorage.getSecret(settings.translationLlmSecretId) ?? "") : "")
+      : new GoogleWebTranslationProvider();
+  }
+
+  async testTitleTranslation(): Promise<string> {
+    const provider = this.createTranslationProvider({ ...this.settings });
+    provider.validate?.();
+    const timerWindow = this.app.workspace.containerEl.ownerDocument.defaultView;
+    if (!timerWindow) throw new Error(t("ui.could_not_access_the_workspace_window"));
+    const timeoutMs = provider.requestTimeoutMs ?? 15_000;
+    let timer: number | undefined;
+    try {
+      const result = await Promise.race([
+        provider.translate("The role of trust in scientific communication", "en", this.settings.targetLanguage),
+        new Promise<never>((_resolve, reject) => {
+          timer = timerWindow.setTimeout(() => reject(new Error(t("ui.translation_request_timed_out", { seconds: timeoutMs / 1000 }))), timeoutMs);
+        }),
+      ]);
+      return result.translatedText;
+    } finally { if (timer !== undefined) timerWindow.clearTimeout(timer); }
+  }
+
+  async clearTitleTranslationCache(expectedRepository: RssRepository): Promise<void> {
+    await this.runTranslationOperation(async () => {
+      const context = this.requireContext();
+      if (!this.isDatabaseReady() || context.repository !== expectedRepository) {
+        throw new Error(t("translation.database_changed"));
+      }
+      const release = this.operationCoordinator.acquireOperation("translation");
+      try {
+        this.resetTranslationViews(true);
+        await context.translationService.clearTitleCache();
+        await this.refreshViews();
+      } finally { release(); }
+    });
+  }
+
+  private resetTranslationViews(disable = false): void {
+    for (const leaf of this.app.workspace.getLeavesOfType(RSS_READER_VIEW_TYPE)) {
+      if (leaf.view instanceof RssReaderView) leaf.view.resetTitleTranslationState(disable);
+    }
+  }
+
+  private runTranslationOperation(action: () => Promise<void>): Promise<void> {
+    const task = this.translationOperation.then(action, action);
+    this.translationOperation = task.catch(() => undefined);
+    return task;
+  }
+
   getLlmApiKey(): string {
     return this.settings.llmSecretId
       ? (this.app.secretStorage.getSecret(this.settings.llmSecretId) ?? "")
@@ -971,4 +1043,12 @@ function normalizeDirectory(directory: string): string {
 
 function fileTimestamp(): string {
   return new Date().toISOString().replace(/[:.]/g, "-");
+}
+
+function translationConfigurationKey(settings: RssReaderSettings): string {
+  return JSON.stringify([
+    settings.translationProvider, settings.targetLanguage,
+    settings.translationLlmBaseUrl, settings.translationLlmSecretId,
+    settings.translationLlmModel, settings.translationLlmPrompt,
+  ]);
 }

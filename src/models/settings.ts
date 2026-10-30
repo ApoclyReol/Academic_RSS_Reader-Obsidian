@@ -1,3 +1,7 @@
+export const DEFAULT_TRANSLATION_PROMPT = "Translate this academic title into {targetLanguage}. Preserve terminology and formulas. Return only the translation.";
+
+export type TranslationProviderId = "google-web" | "llm";
+
 export interface RssReaderSettings {
   dataDirectory: string;
   autoUpdateOnStartup: boolean;
@@ -10,6 +14,11 @@ export interface RssReaderSettings {
   cardShowGraphicalAbstract: boolean;
   cardDynamicHeight: boolean;
   targetLanguage: TargetLanguage;
+  translationProvider: TranslationProviderId;
+  translationLlmBaseUrl: string;
+  translationLlmSecretId: string;
+  translationLlmModel: string;
+  translationLlmPrompt: string;
   googleTranslationDisclosureAccepted: boolean;
   llmBaseUrl: string;
   llmSecretId: string;
@@ -47,6 +56,11 @@ export const DEFAULT_SETTINGS: RssReaderSettings = {
   cardShowGraphicalAbstract: true,
   cardDynamicHeight: false,
   targetLanguage: "zh-CN",
+  translationProvider: "google-web",
+  translationLlmBaseUrl: "",
+  translationLlmSecretId: "",
+  translationLlmModel: "",
+  translationLlmPrompt: DEFAULT_TRANSLATION_PROMPT,
   googleTranslationDisclosureAccepted: false,
   llmBaseUrl: "",
   llmSecretId: "",
@@ -113,6 +127,11 @@ export function normalizeSettings(
     targetLanguage: isSupportedTargetLanguage(stored.targetLanguage)
       ? stored.targetLanguage
       : DEFAULT_SETTINGS.targetLanguage,
+    translationProvider: stored.translationProvider === "llm" ? "llm" : "google-web",
+    translationLlmBaseUrl: stringValue(stored.translationLlmBaseUrl, "").trim(),
+    translationLlmSecretId: stringValue(stored.translationLlmSecretId, "").trim(),
+    translationLlmModel: stringValue(stored.translationLlmModel, "").trim(),
+    translationLlmPrompt: stringValue(stored.translationLlmPrompt, "").trim() || DEFAULT_TRANSLATION_PROMPT,
     googleTranslationDisclosureAccepted: booleanValue(
       stored.googleTranslationDisclosureAccepted,
       DEFAULT_SETTINGS.googleTranslationDisclosureAccepted,

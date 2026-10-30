@@ -4,6 +4,7 @@ import { t } from "../i18n";
 import type { RssReaderSettings } from "../models/settings";
 import { RssRepository } from "../repositories/rss-repository";
 import type { DatabaseOperationCoordinator } from "../infrastructure/database-operation-coordinator";
+import { validateLlmBaseUrl } from "./llm-endpoint";
 import { parseTier } from "./relevance";
 
 export interface LlmReviewRun {
@@ -18,25 +19,7 @@ type TimerWindow = Pick<Window, "setTimeout"> &
 const LLM_TIMEOUT_MS = 30_000;
 const MAX_RETRIES = 2;
 
-export function validateLlmBaseUrl(value: string): URL {
-  let url: URL;
-  try {
-    url = new URL(value.trim());
-  } catch {
-    throw new Error(t("ui.the_llm_endpoint_must_use_https_or_local_http"));
-  }
-  const hostname = url.hostname.replace(/^\[|\]$/g, "").toLocaleLowerCase();
-  const localHttp =
-    url.protocol === "http:" &&
-    ["localhost", "127.0.0.1", "::1"].includes(hostname);
-  if (url.protocol !== "https:" && !localHttp) {
-    throw new Error(t("ui.the_llm_endpoint_must_use_https_or_local_http"));
-  }
-  if (url.username || url.password) {
-    throw new Error(t("ui.the_llm_endpoint_must_not_contain_credentials"));
-  }
-  return url;
-}
+export { validateLlmBaseUrl } from "./llm-endpoint";
 
 export class LlmService {
   private generation = 0;

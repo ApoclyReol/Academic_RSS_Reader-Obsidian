@@ -559,6 +559,7 @@ export class RssRepository {
       db.run(
         `
         UPDATE translations SET
+          provider=$provider,
           translated_text=$translatedText,
           source_language=$sourceLanguage,
           status=$status,
@@ -571,6 +572,18 @@ export class RssRepository {
         this.translationParams(record),
       );
     });
+  }
+
+  countTitleTranslationCache(): number {
+    return this.database.get<{ count: number }>("SELECT COUNT(*) AS count FROM translations WHERE field='title'")?.count ?? 0;
+  }
+
+  async clearTitleTranslationCache(): Promise<void> {
+    await this.database.write((db) => { db.run("DELETE FROM translations WHERE field='title'"); });
+  }
+
+  async resetInterruptedTranslations(): Promise<void> {
+    await this.database.write((db) => { db.run("UPDATE translations SET status='pending' WHERE status='translating'"); });
   }
 
   async deleteTranslationTask(

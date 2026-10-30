@@ -9,7 +9,7 @@ Academic RSS Reader is a desktop Obsidian plugin for the first pass of academic 
 The plugin focuses on the step between “new papers arrived” and “I know what deserves a closer read”. It is designed to reduce repetitive triage, not to replace a reference manager or a full-text database.
 
 > [!IMPORTANT]
-> Current recommended version: **1.8.0**. This version requires Obsidian **1.13.0 or later** and is desktop-only. Its bundled runtime must also provide Node.js **22.16 or later**, `node:sqlite` `DatabaseSync`, and the SQLite Backup API. Update Obsidian before installing or updating when possible.
+> Current recommended version: **1.9.0**. This version requires Obsidian **1.13.0 or later** and is desktop-only. Its bundled runtime must also provide Node.js **22.16 or later**, `node:sqlite` `DatabaseSync`, and the SQLite Backup API. Update Obsidian before installing or updating when possible.
 
 ## Why use Academic RSS Reader
 
@@ -86,7 +86,9 @@ The local model needs at least two positive and two negative training papers. Un
 ### Translate and analyze
 
 - Translate visible paper titles and prefetch the next eight titles while you scroll.
-- Cache translations in the local database and keep the original title available at any time.
+- Choose Google web translation (default) or an OpenAI-compatible LLM under **Title translation**. LLM translation has its own endpoint, SecretStorage key, model, and prompt; leaving the prompt blank restores the short default. `{targetLanguage}` inserts the selected target language. Local HTTP services may omit the key.
+- Cache one translation per paper, field, and target language, and keep the original title available at any time. Switching services or prompts reuses existing translations. **Clear title translation cache** in settings clears titles in all target languages and returns open readers to originals; click **Translate titles** when you want fresh translations. Abstracts and reading states are preserved.
+- **Test translation** sends a fixed sample title without opening a database; API charges may apply.
 - Review overall reading states and compare interest rates across feeds.
 - Interest rate is `(following + saved) / (following + saved + skipped + expired)`; papers to screen are excluded. Moving skipped papers to expired does not change the rate.
 - Subscription update times and the last-update summary are parsed as UTC and displayed in the user's system timezone.
@@ -103,7 +105,7 @@ The local model needs at least two positive and two negative training papers. Un
 - RSS/Atom title markup and HTML entities are converted to plain text before storage. The first database load creates a protection backup before cleaning historical titles and cached translations, while preserving translation source snapshots and hashes. Markup-only changes reuse translations; content changes invalidate cached translations and refresh them when translation is enabled.
 - Corrigendum and Erratum notices remain separate papers with a correction badge, a short title, and expandable full original and translated titles. Cited original-paper years and DOIs are not inferred as correction metadata.
 - Article links accept only `http:` and `https:`. RSS/XML rejects `DOCTYPE`, invalid root structures, and responses over 10 MiB; only known tracking parameters are removed, while business query parameters are preserved.
-- LLM endpoints must use HTTPS, or HTTP on `localhost`, `127.0.0.1`, or `::1`. Requests have a 30-second timeout and bounded retries.
+- LLM endpoints must use HTTPS, or HTTP on `localhost`, `127.0.0.1`, or `::1`. Recommendation review requests time out after 30 seconds; LLM title translations after 45 seconds. Both use bounded retries.
 
 ## Get started
 
@@ -141,8 +143,9 @@ Subscriptions, papers, reading states, translations, recommendations, and intere
 Academic RSS Reader does not require an account, run telemetry, or operate a developer relay server. Network requests are limited to services you use:
 
 - RSS/Atom updates go to the feed URLs you configure.
-- Title translation uses an unofficial Google web endpoint. When enabled, visible and prefetched titles are sent directly from your device; translations may be rate-limited, inaccurate, or unavailable and should not be used for formal citation. Requests time out, retry with bounded backoff, and stop after repeated failures; a failed task remains available for manual retry.
-- An LLM request is made only when you explicitly test the connection or review pending papers. The request includes the paper information needed for the review and your optional research-interest description, and is sent to the endpoint you configure.
+- Title translation uses the selected Google web endpoint or your configured LLM endpoint. Google uses an unofficial web API. When enabled, visible and prefetched titles are sent directly from your device; translations may be rate-limited, inaccurate, or unavailable and should not be used for formal citation. Requests time out, retry with bounded backoff, and stop after repeated failures; a failed task remains available for manual retry.
+- LLM title translation sends only the title and translation instructions when you enable translation, or a fixed sample when you test it. Translation configuration is independent of recommendation review.
+- LLM recommendation requests are made when you explicitly test the review connection or review pending papers. The request includes the paper information needed for the review and your optional research-interest description, and is sent to the endpoint you configure.
 
 The plugin does not create or open a database during startup. Database creation and loading begin only after you choose a Vault-relative data directory and explicitly create or load it. Saves use validated temporary and previous snapshots, and the settings page can create protection backups and restore the latest valid backup even after a persistence error is reported. The desktop-native SQLite boundary is limited to the database file, WAL/SHM sidecars, temporary files, and backups; other Vault files continue to use Obsidian's `DataAdapter` boundary.
 
@@ -163,6 +166,7 @@ The plugin does not create or open a database during startup. Database creation 
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [Security and privacy](SECURITY.md)
 - [Changelog](CHANGELOG.md)
+- [v1.9.0 release notes](docs/V1_9_0_RELEASE.md)
 - [v1.8.0 release notes](docs/V1_8_0_RELEASE.md)
 - [v1.7.1 release notes](docs/V1_7_1_RELEASE.md)
 - [v1.7.0 release notes](docs/V1_7_0_RELEASE.md)

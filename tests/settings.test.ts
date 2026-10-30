@@ -43,6 +43,7 @@ vi.mock("obsidian", () => {
   class MockNotice {}
 
   return {
+    Modal: class {},
     AbstractInputSuggest: MockAbstractInputSuggest,
     Notice: MockNotice,
     PluginSettingTab: MockPluginSettingTab,
@@ -60,6 +61,7 @@ import type {
 
 import { RssReaderSettingTab } from "../src/settings/rss-reader-setting-tab";
 import {
+  DEFAULT_TRANSLATION_PROMPT,
   DEFAULT_SETTINGS,
   normalizeSettings,
   SUPPORTED_TARGET_LANGUAGES,
@@ -82,7 +84,7 @@ describe("declarative settings", () => {
       "数据库存储",
       "订阅更新",
       "文献卡片",
-      "实验性网页翻译",
+      "标题翻译",
       "LLM 推荐复核",
     ]);
     expect(controls.map((item) => item.control.key)).toEqual([
@@ -95,11 +97,17 @@ describe("declarative settings", () => {
       "cardShowDoi",
       "cardShowAbstract",
       "cardShowGraphicalAbstract",
+      "translationProvider",
       "targetLanguage",
+      "translationLlmBaseUrl",
+      "translationLlmModel",
+      "translationLlmPrompt",
       "llmBaseUrl",
       "llmModel",
       "userInterest",
     ]);
+    const languageItem = controls.find((item) => item.control.key === "targetLanguage");
+    expect(languageItem?.desc).toBeUndefined();
     const translationControl = controls.find(
       (item) => item.control.key === "targetLanguage",
     )?.control;
@@ -111,7 +119,27 @@ describe("declarative settings", () => {
         expect(translationControl.options[language]).toContain(`(${language})`);
       }
     }
-    expect(items.filter((item) => "render" in item)).toHaveLength(6);
+    expect(items.filter((item) => "render" in item)).toHaveLength(9);
+  });
+
+  it("keeps translation defaults, restores blank prompts and separates review settings", () => {
+    expect(normalizeSettings({})).toMatchObject({ translationProvider: "google-web", translationLlmPrompt: DEFAULT_TRANSLATION_PROMPT });
+    expect(normalizeSettings({ translationLlmPrompt: "  " }).translationLlmPrompt).toBe(DEFAULT_TRANSLATION_PROMPT);
+    const plugin = createPluginStub();
+    const tab = new RssReaderSettingTab({} as App, plugin);
+    void tab.setControlValue("translationProvider", "llm");
+    void tab.setControlValue("translationLlmBaseUrl", " https://example.com/v1 ");
+    void tab.setControlValue("translationLlmModel", " translator ");
+    void tab.setControlValue("translationLlmPrompt", " My custom prompt ");
+    expect(plugin.settings).toMatchObject({ translationProvider: "llm", translationLlmBaseUrl: "https://example.com/v1", translationLlmModel: "translator", translationLlmPrompt: "My custom prompt", llmBaseUrl: "", llmModel: "", llmSecretId: "" });
+    void tab.setControlValue("translationLlmPrompt", " ");
+    expect(plugin.settings.translationLlmPrompt).toBe(DEFAULT_TRANSLATION_PROMPT);
+    const items = tab.getSettingDefinitions().filter(isSettingGroup).flatMap((group) => group.items ?? []);
+    const promptItem = items.filter(isSettingControl).find((item) => item.control.key === "translationLlmPrompt")!;
+    expect(typeof promptItem.visible === "function" && promptItem.visible()).toBe(true);
+    void tab.setControlValue("translationProvider", "google-web");
+    expect(typeof promptItem.visible === "function" && promptItem.visible()).toBe(false);
+    expect(plugin.settings.translationLlmModel).toBe("translator");
   });
 
   it("fills and normalizes paper-card defaults for stored settings", () => {
