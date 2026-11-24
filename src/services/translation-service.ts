@@ -106,6 +106,8 @@ export class TranslationService {
   private cancelRequest: (() => void) | null = null;
   private processingTimer: number | null = null;
   private cooldownUntil = 0;
+  private rateLimitUntil = 0;
+  private rateLimitPaused = false;
   private consecutiveRetryableFailures = 0;
   private lastReportedFailureKey: string | null = null;
 
@@ -115,10 +117,12 @@ export class TranslationService {
     this.stopped = false;
     this.generation += 1;
     this.cooldownUntil = 0;
+    this.rateLimitUntil = 0;
+    this.rateLimitPaused = false;
     this.consecutiveRetryableFailures = 0;
     this.lastReportedFailureKey = null;
     this.lastRequestAt = 0;
-    for (const record of this.repository.listTranslationsByStatus(["pending"])) {
+    for (const record of this.repository.listTranslationsByStatus(["pending", "translating"])) {
       this.enqueue({
         itemId: record.itemId,
         field: record.field,
@@ -182,9 +186,9 @@ export class TranslationService {
     return this.prepareAndEnqueue(itemId, field, 0, force);
   }
 
-  hasFailed(field: TranslationField = "title"): boolean {
+  canRetry(field: TranslationField = "title"): boolean {
     const targetLanguage = this.getSettings().targetLanguage;
-    return this.repository
+    return this.rateLimitPaused || this.repository
       .listTranslationsByStatus(["failed"])
       .some(
         (record) =>
@@ -193,12 +197,16 @@ export class TranslationService {
   }
 
   async retryFailed(field?: TranslationField): Promise<void> {
+    if (this.stopped) return;
+    this.validateConfiguration();
+    const generation = this.generation;
     this.clearProcessingTimer();
-    this.cooldownUntil = 0;
+    this.cooldownUntil = this.rateLimitUntil;
     this.consecutiveRetryableFailures = 0;
     this.lastReportedFailureKey = null;
     const targetLanguage = this.getSettings().targetLanguage;
     for (const record of this.repository.listTranslationsByStatus(["failed"])) {
+      if (this.stopped || generation !== this.generation) return;
       if (
         record.targetLanguage !== targetLanguage ||
         (field && record.field !== field)
@@ -210,8 +218,18 @@ export class TranslationService {
         record.field,
         0,
         true,
+        targetLanguage,
       );
     }
+    if (this.stopped || generation !== this.generation) return;
+    this.rateLimitPaused = false;
+    const remaining = this.rateLimitUntil - Date.now();
+    if (remaining > 0 && this.queue.length > 0) {
+      this.onError(new TranslationNoticeError(t("translation.rate_limit_queued", {
+        seconds: Math.ceil(remaining / 1_000),
+      })));
+    }
+    this.startProcessing();
   }
 
   private async prepareAndEnqueue(
@@ -307,7 +325,7 @@ export class TranslationService {
   }
 
   private async processQueue(): Promise<void> {
-    if (this.processing || this.stopped) {
+    if (this.processing || this.stopped || this.rateLimitPaused || this.queue.length === 0) {
       return;
     }
     const cooldownRemaining = this.cooldownUntil - Date.now();
@@ -323,7 +341,7 @@ export class TranslationService {
     }
     this.processing = true;
     const processingPromise = (async () => {
-      while (!this.stopped && this.queue.length > 0) {
+      while (!this.stopped && !this.rateLimitPaused && this.queue.length > 0) {
         const remainingCooldown = this.cooldownUntil - Date.now();
         if (remainingCooldown > 0) {
           this.scheduleProcessing(remainingCooldown);
@@ -438,11 +456,15 @@ export class TranslationService {
       if (this.stopped || generation !== this.generation) {
         return;
       }
-      this.emitChange(task, current.status, current.targetLanguage);
       if (requestError.retryable) {
         this.consecutiveRetryableFailures += 1;
+        const retryDelayMs = this.retryDelay(requestError);
+        if (requestError.kind === "rate-limit") {
+          this.rateLimitUntil = Math.max(this.rateLimitUntil, Date.now() + retryDelayMs);
+          this.rateLimitPaused = !shouldRetry;
+          this.cooldownUntil = Math.max(this.cooldownUntil, this.rateLimitUntil);
+        }
         if (shouldRetry) {
-          const retryDelayMs = this.retryDelay(requestError);
           this.openCooldown(retryDelayMs);
           this.reportFailure(requestError, retryDelayMs, false);
           this.enqueue(
@@ -452,12 +474,15 @@ export class TranslationService {
             },
             true,
           );
+        } else if (this.rateLimitPaused) {
+          this.onError(new TranslationNoticeError(t("translation.rate_limit_paused")));
         } else {
           this.reportFailure(requestError, 0, true);
         }
       } else {
         this.reportFailure(requestError, 0, true);
       }
+      this.emitChange(task, current.status, current.targetLanguage);
     }
   }
 
@@ -515,7 +540,8 @@ export class TranslationService {
         )
       ] ??
       fallbackDelay;
-    return Math.min(Math.max(delayMs, 1_000), MAX_TRANSLATION_COOLDOWN_MS);
+    const backoff = Math.min(Math.max(delayMs, 1_000), MAX_TRANSLATION_COOLDOWN_MS);
+    return error.kind === "rate-limit" ? Math.max(backoff, error.retryAfterMs ?? 0) : backoff;
   }
 
   private openCooldown(delayMs: number): void {
@@ -530,7 +556,7 @@ export class TranslationService {
     this.processingTimer = this.timerWindow.setTimeout(() => {
       this.processingTimer = null;
       this.startProcessing();
-    }, Math.max(0, Math.ceil(delayMs)));
+    }, Math.min(Math.max(0, Math.ceil(delayMs)), 2_147_483_647));
   }
 
   private clearProcessingTimer(): void {
@@ -543,6 +569,7 @@ export class TranslationService {
 
   private resetFailureState(): void {
     this.cooldownUntil = 0;
+    this.rateLimitUntil = 0;
     this.consecutiveRetryableFailures = 0;
     this.lastReportedFailureKey = null;
     this.clearProcessingTimer();

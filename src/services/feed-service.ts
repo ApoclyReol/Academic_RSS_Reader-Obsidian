@@ -499,7 +499,7 @@ export class FeedService {
         const headers: Record<string, string> = {
           Accept:
             "application/rss+xml, application/atom+xml, application/xml, text/xml, */*",
-          "User-Agent": "Academic-RSS-Reader/1.9.0",
+          "User-Agent": "Academic-RSS-Reader/1.9.1",
         };
         const hasMalformedMetadata =
           isMalformedImportedName(feed.name) ||

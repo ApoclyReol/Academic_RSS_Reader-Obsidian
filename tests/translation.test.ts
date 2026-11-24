@@ -298,65 +298,65 @@ describe("translation helpers", () => {
     }
   }, 15_000);
 
-  it("honors a retryable provider error without retrying forever", async () => {
-    const adapter = new MemoryAdapter();
-    const database = new RssDatabase(adapter, "Data/rss-reader.sqlite3");
-    await database.initialize();
-    resources.push({ database, adapter });
-    const repository = new RssRepository(database);
-    const feedId = await repository.addFeed({
-      name: "Rate limit feed",
-      url: "https://example.com/rate-limit",
-      enabled: true,
-    });
-    const { insertedIds } = await repository.upsertParsedItems(feedId, [{
-      stableGuid: "rate-limit-guid",
-      title: "A rate limited translation",
-      titleNorm: "a rate limited translation",
-      authors: "Alice",
-      journal: "Rate limit journal",
-      year: "2026",
-      doi: "",
-      link: "",
-      pubDate: "",
-      summary: "",
+  it("pauses the whole queue after repeated 429s and resumes the failed and pending titles after the server wait", async () => {
+    const { repository, id } = await translationFixture("A current title", "pending");
+    const feedId = await repository.addFeed({ name: "Another journal", url: "https://example.com/other", enabled: true });
+    const { insertedIds: [nextId] } = await repository.upsertParsedItems(feedId, [{
+      stableGuid: "next-title", title: "Another paper", titleNorm: "anotherpaper", authors: "Alice",
+      journal: "Journal", year: "2026", doi: "", link: "", pubDate: "", summary: "",
     }]);
-    let attempts = 0;
+    const retryAfterMs = 1_200_000;
+    const limited = new TranslationRequestError("rate limited", {
+      kind: "rate-limit", retryable: true, retryAfterMs, status: 429,
+    });
+    const translate = vi.fn(async (_text: string) => ({ translatedText: "新译文", detectedSourceLanguage: "en" }))
+      .mockRejectedValueOnce(limited)
+      .mockRejectedValueOnce(limited)
+      .mockRejectedValueOnce(limited);
     const notices: unknown[] = [];
-    const provider: TranslationProvider = {
-      id: "google-web",
-      translate: async () => {
-        attempts += 1;
-        throw new TranslationRequestError("rate limited", {
-          kind: "rate-limit",
-          retryable: true,
-          retryAfterMs: 1,
-          status: 429,
-        });
-      },
-    };
+    vi.useFakeTimers();
+    const clock = { setTimeout, clearTimeout } as unknown as typeof timerWindow;
     const service = new TranslationService(
-      repository,
-      provider,
-      () => DEFAULT_SETTINGS,
-      timerWindow,
-      undefined,
-      (error) => notices.push(error),
-      {
-        retryDelaysMs: [1_000, 1_000, 1_000],
-      },
+      repository, { id: "google-web", translate }, () => DEFAULT_SETTINGS,
+      clock, undefined, (error) => notices.push(error),
     );
     try {
-      await service.requestManual(insertedIds[0]!, "title");
-      await waitForCondition(() => attempts === 3);
-      expect(
-        repository.getTranslation(insertedIds[0]!, "title", "zh-CN"),
-      ).toMatchObject({ attemptCount: 3, status: "failed" });
-      expect(notices).toHaveLength(2);
+      await service.requestManual(id, "title");
+      await service.requestManual(nextId!, "title");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(translate).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(retryAfterMs - 1);
+      expect(translate).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(retryAfterMs + 1);
+      expect(repository.getTranslation(id, "title", "zh-CN")).toMatchObject({ status: "failed", attemptCount: 3 });
+      expect(repository.getTranslation(nextId!, "title", "zh-CN")).toMatchObject({ status: "pending", attemptCount: 0 });
+      expect(translate.mock.calls.map(([title]) => title)).toEqual(Array<string>(3).fill("A current title"));
+      expect(service.canRetry("title")).toBe(true);
+
+      await service.retryFailed("title");
+      expect(repository.getTranslation(id, "title", "zh-CN")).toMatchObject({ status: "pending", attemptCount: 0 });
+      expect(notices).toHaveLength(3);
+      await vi.advanceTimersByTimeAsync(retryAfterMs - 1);
+      expect(translate).toHaveBeenCalledTimes(3);
+      await vi.advanceTimersByTimeAsync(1_001);
+      expect(translate).toHaveBeenCalledTimes(5);
+      expect(repository.getTranslation(id, "title", "zh-CN")?.status).toBe("succeeded");
+      expect(repository.getTranslation(nextId!, "title", "zh-CN")?.status).toBe("succeeded");
+      expect(service.canRetry("title")).toBe(false);
     } finally {
       await service.stop();
+      vi.useRealTimers();
     }
-  }, 15_000);
+  });
+
+  it("resumes a translation left in progress by an interrupted session", async () => {
+    const { repository, id, service, translate } = await translationFixture("A current title", "translating");
+    try {
+      await service.initialize();
+      await waitForCondition(() => repository.getTranslation(id, "title", "zh-CN")?.status === "succeeded");
+      expect(translate).toHaveBeenCalledOnce();
+    } finally { await service.stop(); }
+  });
 
   it("keeps translation cache entries separate when the target language changes", async () => {
     const adapter = new MemoryAdapter();

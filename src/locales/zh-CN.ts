@@ -155,6 +155,8 @@ export const zhCN = {
   "ui.translation_retry_scheduled": "翻译暂时不可用（{error}），将在 {seconds} 秒后自动重试。",
   "ui.translation_retry_exhausted": "连续失败后已停止自动翻译（{error}）；网络恢复后可手动重试。",
   "ui.translation_failed_with_reason": "翻译失败（{error}），不会自动重试。",
+  "translation.rate_limit_paused": "翻译接口触发限流（429），队列已暂停。点击“重试翻译”可在等待结束后继续。",
+  "translation.rate_limit_queued": "已安排重试。限流等待约 {seconds} 秒后继续翻译。",
   "ui.retry_translation": "重试翻译",
   "ui.graphical_abstract": "摘要图",
   "ui.graphical_abstract_for": "{title} 的摘要图",

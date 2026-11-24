@@ -51,6 +51,8 @@ Title translation uses Google web translation or the independently configured LL
 
 For LLM translation, check the endpoint, SecretStorage key, and model under **Settings → Title translation**; use **Test translation** to check a fixed sample without loading a database.
 
+An HTTP 429 pauses the translation queue. After automatic attempts run out, select **Retry translation** to resume. If the rate limit wait is ongoing, the app shows the remaining time and resumes automatically when it ends.
+
 Use **Retry translation** after the network recovers, or disable title translation to continue using original titles. The target language is configurable in settings; source language is detected automatically. Switching services, models, or prompts keeps existing translations. To replace them, use **Clear title translation cache** in settings, then enable title translation again. This clears titles in all target languages and preserves originals, reading states, and abstract translations.
 
 ## LLM connection testing fails

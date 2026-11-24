@@ -1,6 +1,6 @@
 # 安全与隐私
 
-适用于 Academic RSS Reader v1.9.0 当前代码基线。
+适用于 Academic RSS Reader v1.9.1 当前代码基线。
 
 Academic RSS Reader 是本地桌面插件，不提供开发者中转服务器，不收集遥测。
 

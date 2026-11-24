@@ -155,6 +155,8 @@ export const en = {
   "ui.translation_retry_scheduled": "Translation temporarily unavailable ({error}); automatic retry in {seconds} seconds.",
   "ui.translation_retry_exhausted": "Automatic translation stopped after repeated failures ({error}). Retry manually when the network recovers.",
   "ui.translation_failed_with_reason": "Translation failed ({error}). Automatic retry was not scheduled.",
+  "translation.rate_limit_paused": "The translation service is rate limiting requests (429). The queue is paused. Select Retry translation to resume after the wait.",
+  "translation.rate_limit_queued": "Translation retry queued. Requests resume in {seconds} seconds after the rate limit wait.",
   "ui.retry_translation": "Retry translation",
   "ui.graphical_abstract": "Graphical abstract",
   "ui.graphical_abstract_for": "Graphical abstract for {title}",

@@ -259,7 +259,7 @@ export class RssReaderView extends ItemView {
       return;
     }
     this.updateTranslationRetryAction();
-    if (!this.plugin.isDatabaseReady()) {
+    if (targetLanguage !== this.plugin.settings.targetLanguage || !this.plugin.isDatabaseReady()) {
       return;
     }
     const card = this.containerEl.querySelector(
@@ -269,13 +269,9 @@ export class RssReaderView extends ItemView {
     if (!item) {
       return;
     }
-    if (targetLanguage === this.plugin.settings.targetLanguage) {
-      const itemIndex = this.readerItems.findIndex(
-        (readerItem) => readerItem.id === itemId,
-      );
-      if (itemIndex >= 0) {
-        this.readerItems[itemIndex] = item;
-      }
+    const itemIndex = this.readerItems.findIndex((readerItem) => readerItem.id === itemId);
+    if (itemIndex >= 0) {
+      this.readerItems[itemIndex] = item;
     }
     if (!card?.instanceOf(HTMLElement)) {
       return;
@@ -285,7 +281,6 @@ export class RssReaderView extends ItemView {
       title.empty();
       this.renderTitle(title, item);
     }
-    this.updateTranslationRetryAction();
   }
 
   refreshTranslatedTitles(): void {
@@ -939,7 +934,7 @@ export class RssReaderView extends ItemView {
     const shouldShow =
       this.translationEnabled &&
       this.plugin.isDatabaseReady() &&
-      this.plugin.translationService.hasFailed("title");
+      this.plugin.translationService.canRetry("title");
     if (!shouldShow) {
       this.translationRetryButton?.remove();
       this.translationRetryButton = null;
